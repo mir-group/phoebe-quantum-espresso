@@ -1,3 +1,285 @@
+! Phoebe
+subroutine set_wavefunction_gauge(ik)
+  ! Subroutine to fix gauge of the wavefunction and satisfy
+  ! the symmetry properties of the wavefunction.
+  use gvect, only: gstart, g, ig_l2g, ngm, ngm_g, mill_g
+  use wavefunctions, only: evc ! plane wave coefficients, evc(npwx*npol,nbnd)
+  use wvfct, only: et, & ! eigenvalues of the Hamiltonian et(nbnd,nkstot)
+       nbnd, & ! number of bands
+       npwx, & ! maximum number of PW for wavefunctions
+       nbndx, & ! max number of bands used in iterative diag
+       npw ! number of plane waves
+  use constants, only: pi, ryToEv, tpi ! greek-pi
+  use kinds, only: dp
+  use parallel_include
+  use input_parameters, only: calculation
+  use mp_pools, only: intra_pool_comm, me_pool, root_pool, &
+       nproc_pool, my_pool_id
+  use mp, only: mp_bcast, mp_sum
+  use mp_world, only: mpime
+  use klist, only: igk_k, ngk, xk
+  use cell_base, only: tpiba, bg
+  use io_files, only: prefix, tmp_dir
+  use start_k, only: nk1, nk2, nk3, k1, k2, k3
+
+  implicit none
+  integer, intent(in) :: ik
+  !
+  integer :: g0_pool, ib, ib1, ib2, sizeSubspace, shap(2), nRows, nBands, &
+       num_local_plane_Waves,  i, j, num_plane_Waves, ik_global, i_unit, ios
+  real(dp) :: theta
+  real(dp), allocatable :: g_global(:,:)
+  complex(dp) :: correction, xc
+  complex(dp), allocatable :: gauge_coefficients(:), evc_collected(:)
+  character(len=64) :: file_name
+  character(len=4) :: ichar
+  logical, save :: first = .true.
+
+  if ( trim(calculation) /= 'scf' &
+    .and. trim(calculation) /= 'nscf' &
+    .and. trim(calculation) /= 'bands' ) then
+    return
+  end if
+  !
+  ! Things only work without offset
+  if ( k1 /= 0 .or. k2 /= 0 .or. k3 /= 0 ) then
+    call errore("phoebe", "No k-point offset allowed",1)
+    ! that's because the k+q mesh would not be commensurate
+  end if
+  !
+  ! figure out which process holds the G=0 vector
+  g0_pool = 0
+  if ( gstart == 2 ) then
+    g0_pool = me_pool
+  end if
+  call mp_sum(g0_pool, intra_pool_comm)
+  if ( me_pool == g0_pool ) then
+    if ( sum(g(:,1)**2)>1.0e-8 ) then
+      call errore("set_wavefunction_gauge", "Unexpectedly G/=0", 1)
+    end if
+  end if
+  !
+  ! Sanity check, in case of particular band parallelizations
+  shap = shape(evc)
+  nRows = shap(1)
+  nBands = shap(2)
+    if ( nBands /= nbnd ) then
+    call errore("set_wavefunction_gauge", "Unexpected",1)
+  end if
+  !
+  !--------------------------------------------------------------
+  ! Step 1
+  ! Fix the G=0 plane wave coefficient to be positive and real
+  ! for degenerate eigenstates, only the first band of the degenerate group
+  ! can be set to have positive G=0 coefficient
+  
+  allocate(gauge_coefficients(nbnd))
+  gauge_coefficients = cmplx(0.,0.,kind=dp)
+  if ( me_pool == g0_pool ) then
+    ib = 0
+    ! loop on bands
+    do while ( ib < nbnd )
+      ib = ib + 1      
+      ! check if the band is degenerate, and get the degenerate subspace size
+      sizeSubspace = 1
+      do ib2 = ib+1,nbnd
+        if (abs(et(ib,ik) - et(ib2,ik)) > 0.0001 / ryToeV) then  ! 0.1 meV
+          exit
+        end if
+        sizeSubspace = sizeSubspace + 1;
+      end do
+      if (sizeSubspace == 1) then
+        gauge_coefficients(ib) = evc(1,ib)
+      else
+        gauge_coefficients(ib:ib+sizeSubspace-1) = evc(1,ib)
+      end if
+      ib = ib + sizeSubspace - 1;      
+    end do ! band loop    
+  end if
+ 
+  ! test: let's fix the gauge Re{c(G=0)}>0, Im{c(G=0)}=0
+  call mp_bcast(gauge_coefficients, g0_pool, intra_pool_comm)
+  ! for every band, find max
+  do ib = 1,nbnd
+    xc = gauge_coefficients(ib)
+    ! Now, I compute and impose the gauge
+    ! z = |z| e^(i theta)
+    theta = atan( dimag(xc) / real(xc) )
+    if ( real(xc) < 0. ) then ! rotation to make c(G) positive
+      theta = theta + pi
+    end if
+    correction = cmplx(cos(-theta), sin(-theta), kind=dp)
+    ! Impose gauge
+    evc(:,ib) = evc(:,ib) * correction
+  end do
+  deallocate(gauge_coefficients)
+
+  !----------------------------------------------------
+  ! STEP 2:
+  
+!  print*, maxval(ig_l2g), shape(ig_l2g), "!!"
+!  write(11,*) ig_l2g
+
+  ! we save the global list of g-vectors
+  if ( first ) then
+    allocate(g_global(3,ngm_g))
+    g_global = 0.d0
+    do i = 1,ngk(ik)
+      g_global(:,ig_l2g(i)) = g(:,i)
+    end do
+    call mp_sum(g_global, intra_pool_comm)
+  end if
+  
+  ik_global = ik !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  
+  !print*, "Check equal: ", ngm_g, shape(g), ngm
+  ! ngm_g is global, g is local(distributed), of size ngm
+  !print*, shape(igk_k) ! somehow, igk_k is smaller than g or ngm_g
+  !print*, ngk(ik) ! local number of plane waves for this k-point
+  ! such that ngk(ik) <= shape(igk_k)(1)
+  ! Note also ngm >> ngk(ik) (like a factor 8 in some testing)
+
+  if ( trim(calculation) == 'scf' ) then
+
+    if ( first ) then
+      first = .false.
+      
+      if ( my_pool_id == 0 .and. me_pool == root_pool ) then
+        ! Save g vectors to file, and info on symmetry
+        
+        file_name = trim(tmp_dir) // trim(prefix) // ".phoebe.scf.0000.dat"
+        print*, file_name
+        i_unit = 52
+        open(unit = i_unit, file = TRIM(file_name), form = 'unformatted', &
+             access = 'sequential', status = 'replace', iostat = ios)
+        write(i_unit) ik_global, num_plane_waves
+        write(i_unit) nk1, nk2, nk3
+        write(i_unit) g_global
+        write(i_unit) xk ! list of irreducible points
+        ! write(i_unit) k_equiv ! map reducible to irreducible
+        ! write(i_unit) k_equiv_symm ! symmetry ID for rotation
+        close(i_unit) 
+      end if
+      
+    end if
+    
+    if ( me_pool == root_pool ) then
+      write(ichar,"(I4.4)") ik_global
+      file_name = trim(tmp_dir) // trim(prefix) // ".phoebe.scf." // ichar // ".dat"
+      i_unit = 52
+      open(unit = i_unit, file = TRIM(file_name), form = 'unformatted', &
+           access = 'sequential', status = 'replace', iostat = ios)
+      write(i_unit) nbnd
+      write(i_unit) et(:,ik)
+
+      print*, file_name
+    end if
+    ib = 0
+    ! loop on bands
+    do while ( ib < nbnd )
+      ib = ib + 1
+      sizeSubspace = 1
+      ! check if the band is degenerate, and get the degenerate subspace size
+      do ib2 = ib+1,nbnd
+        if (abs(et(ib,ik) - et(ib2,ik)) > 0.0001 / ryToeV) then  ! 0.1 meV
+          exit
+        end if
+        sizeSubspace = sizeSubspace + 1;
+      end do
+      if ( sizeSubspace > 1 ) then
+        do ib1 = ib,ib+sizeSubspace-1
+
+          ! I want to reorder evc to be aligned with global list of g_vectors
+          allocate(evc_collected(ngm_g))
+          evc_collected = cmplx(0.,0.,kind=dp)
+          do i = 1,ngk(ik)
+            evc_collected(ig_l2g(igk_k(i,ik))) = evc(i,ib1)
+          end do
+          call mp_sum(evc_collected, intra_pool_comm)
+          
+          if ( me_pool == root_pool ) then
+            write(i_unit) ib1
+            write(i_unit) evc_collected
+          end if
+
+          deallocate(evc_collected)
+          
+        end do
+      end if
+      ib = ib + sizeSubspace - 1;      
+    end do ! band loop
+    
+    if ( me_pool == root_pool ) then
+      close(i_unit)      
+    end if
+    
+  end if
+  
+  ! else
+
+  !   ! check if there are degeneracies
+  !   ! if none, the gauge is set and we can proceed
+  !   ! this is likely to happen for low-symmetry points.
+  !   no_degeneracies = .false.
+  !   ib = 0
+  !   ! loop on bands
+  !   do while ( ib < nbnd )
+  !     ib = ib + 1
+  !     sizeSubspace = 1
+  !     ! check if the band is degenerate, and get the degenerate subspace size
+  !     do ib2 = ib+1,nbnd
+  !       if (abs(et(ib,ik) - et(ib2,ik)) > 0.0001 / ryToeV) then  ! 0.1 meV
+  !         exit
+  !       end if
+  !       sizeSubspace = sizeSubspace + 1;
+  !     end do
+  !     if ( sizeSubspace > 1 ) no_degeneracies = .true. 
+  !     ib = ib + sizeSubspace - 1;      
+  !   end do ! band loop
+  !   if ( no_degeneracies ) return
+
+  !   ! If we found degeneracies, we rotate the wavefunctions
+  !   ! at a given set.
+    
+  !   if ( me_pool == root_pool ) then
+      
+  !     if ( first ) then
+  !       first = .false.
+  !       ! read info on g vectors and symmetries
+  !     end if
+      
+  !     ! Find irreducible index
+      
+  !     ik_irr = ...
+      
+  !     ! Read the wavefunction
+      
+  !     evcIrr = ...
+  !     etIrr = ...
+
+  !     ! Rotate the wavefunction
+
+  !     evcRot = ...
+  !     etRot = etIrr
+      
+  !     ! Substitute
+
+  !     evc(ig_loc,ibSubspace) = evcRot(ig_glob,ib)
+  !     et(:,ik) = etRot(:)
+      
+  !   end if
+    
+  ! end if
+
+  stop
+  
+  return
+end subroutine set_wavefunction_gauge
+
+
+
+
+
 !
 ! Copyright (C) 2001-2020 Quantum ESPRESSO group
 ! This file is distributed under the terms of the
@@ -255,6 +537,11 @@ SUBROUTINE diag_bands( iter, ik, avg_iter )
      CALL diag_bands_k()
      !
   ENDIF
+
+  ! PHOEBE:
+  ! Apply gauge of wavefunction
+  call set_wavefunction_gauge(ik)
+   
   !
   ! ... deallocate work space
   !
