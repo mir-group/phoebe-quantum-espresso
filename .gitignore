@@ -38,3 +38,7 @@ tempdir
 EPW/src/tags
 EPW/src/tmp
 LAXlib/*.fh
+
+archive/v3.1.0
+include/qe_cdefs.h
+LIBBEEF/
