@@ -197,6 +197,23 @@ end subroutine find_irreducible_grid
 subroutine set_wavefunction_gauge(ik)
   ! Subroutine to fix gauge of the wavefunction and satisfy
   ! the symmetry properties of the wavefunction.
+  !
+  ! A few notes:
+  ! The rotation that is performed is described in the Phoebe documentation page.
+  ! As is, the code doesn't work with magnetism (spin-orbit, or LSDA)
+  !
+  ! Technical notes:
+  ! evc(ig,ib): plane wave coefficients of G-vector ig and band ib.
+  !             MPI-distributed over G-vectors
+  ! ig_l2g: maps the local g vector to the global G-vector
+  ! igk_k(ig,ik): the G-vectors of the wavefunction are ordered differently
+  !               at every k-point. This array maps the local G-vector order to the
+  !               global G-vector order
+  ! g: list of G-vectors, ordered by magnitude of |G|^2, in cartesian coords
+  ! ngm_g: number of G-vectors in the global list
+  ! ngk(ik): MPI-local number of plane wave coefficients for evc
+  !          note that, even in serial, ngm_g>>ngk(ik), for reasons
+  
   use gvect, only: gstart, g, ig_l2g, ngm, ngm_g, mill_g
   use wavefunctions, only: evc ! plane wave coefficients, evc(npwx*npol,nbnd)
   use wvfct, only: et, & ! eigenvalues of the Hamiltonian et(nbnd,nkstot)
@@ -216,8 +233,10 @@ subroutine set_wavefunction_gauge(ik)
   use cell_base, only: tpiba, bg, at
   use io_files, only: prefix, tmp_dir
   use start_k, only: nk1, nk2, nk3, k1, k2, k3
-  USE symm_base, ONLY : s, sr, nsym, t_rev, irt, time_reversal, ft
+  USE symm_base, only: s, sr, nsym, t_rev, irt, time_reversal, ft
   use control_flags, only: restart
+  use lsda_mod, only: nspin
+  use noncollin_module, only: noncolin
   implicit none
   integer, intent(in) :: ik
   !
@@ -239,7 +258,7 @@ subroutine set_wavefunction_gauge(ik)
   character(len=4) :: ichar
   logical, save :: first = .true.
   logical, allocatable :: is_band_degenerate(:), is_band_degenerate_(:)
-  logical :: any_prob, in_scf, in_nscf, use_time_reversal
+  logical :: any_prob, in_scf, in_nscf
   integer, parameter :: i_unit = 52
 
   in_scf = (trim(calculation) == 'scf') .and. (restart) 
@@ -248,6 +267,15 @@ subroutine set_wavefunction_gauge(ik)
   if ( (.not. in_scf) .and. (.not. in_nscf) ) then
     return
   end if
+
+  if ( nspin /= 1 ) then
+    call errore("phoebe", "Spin is not yet supported in phoebe", 1)
+  end if
+    if ( noncolin ) then
+    call errore("phoebe", "Spin-orbit is not yet supported in phoebe", 1)
+  end if
+  ! Both can be supported, but we need to consider magnetic symmetries
+
   !
   ! Things only work without offset
   if ( k1 /= 0 .or. k2 /= 0 .or. k3 /= 0 ) then
@@ -355,10 +383,6 @@ subroutine set_wavefunction_gauge(ik)
         
         read(i_unit) g_global_
         ! I checked that g vectors are the same
-!        print*, ngm_g_
-!        print*, "!!!", sum((g_global - g_global_)**2)
-!        deallocate(g_global_)
-!        stop
         
         close(i_unit) 
       end if
@@ -392,10 +416,6 @@ subroutine set_wavefunction_gauge(ik)
       call cryst_to_cart(1, xk_full_cart(:,i), at, -1)
     end do
 
-    do i = 1,nk_full
-      write(19,*) i, xk_equiv(i)
-    end do
-    
   end if
 
   ! define ik_global as the index of this point
@@ -406,13 +426,6 @@ subroutine set_wavefunction_gauge(ik)
   end do
   ! this also folds point correctly in 1st BZ
   call get_point_index(ik_global, xk_crys, nk1_,nk2_,nk3_, k1,k2,k3, .false.)
-  
-  !print*, "Check equal: ", ngm_g, shape(g), ngm
-  ! ngm_g is global, g is local(distributed), of size ngm
-  !print*, shape(igk_k) ! somehow, igk_k is smaller than g or ngm_g
-  !print*, ngk(ik) ! local number of plane waves for this k-point
-  ! such that ngk(ik) <= shape(igk_k)(1)
-  ! Note also ngm >> ngk(ik) (like a factor 8 in some testing)
   
   if ( in_scf ) then ! -----------------------
 
@@ -475,21 +488,9 @@ subroutine set_wavefunction_gauge(ik)
 
     ik_irr = xk_equiv(ik_global)
     isym = xk_equiv_symmetry(ik_global,1)
-
-!    do i = 1,48
-!      print*, i, xk_equiv(i), xk_equiv_symmetry(i,1)
-!    end do
-!    stop
-    
-isym = 39
     
     rotation = sr(:,:,isym) ! such that R*k^red = k^irr, in cartesian space
     inv_rotation = transpose(rotation) ! Rotations are unitary
-    if ( xk_equiv_symmetry(ik_global,2) == 0 ) then
-      use_time_reversal = .false.
-    else
-      use_time_reversal = .true.
-    end if
     
     allocate(et_irr(nbnd))
     allocate(is_band_degenerate_(nbnd))
@@ -616,36 +617,11 @@ isym = 39
           evc_rotated(ig) = evc_irreducible(gmap(ig)) * phases(ig)
         end if
       end do
-
+      
       ! substitute back in QE array
       do ig = 1,ngk(ik)
         evc(ig,ib1) = evc_rotated(ig_l2g(igk_k(ig,ik)))
       end do
-
-      ! if ( ik == 2 .and. ib1 == 1 ) then
-      !   print*, ik, "!!"
-      !   do ig = 1,100
-      !     write(6,"(6F8.2,2ES14.4,I6)") g(:,ig), matmul(inv_rotation, g(:,ig)), &
-      !          evc(ig,ib1) ! evc_test(ig)
-      !   end do
-      !   print*, ""
-      ! end if
-
-      ! !-------------------
-      
-      ! if ( ik == 5 .and. ib1 == 1 ) then
-      !   print*, ik, "!!"
-      !   print*, "ECCO"
-      !   print*, xk(:,ik)
-      !   print*, matmul(rotation, xk(:,ik_irr))
-      !   print*, xk(:,ik_irr)
-        
-      !   do ig = 1,ngk(ik)
-      !     write(6,"(6F8.2,2I5,4ES14.4)") g(:,ig), matmul(inv_rotation, g(:,ig)), &
-      !          ig, gmap(ig), evc(ig,ib1), evc_rotated(igk_k(ig,ik))
-      !   end do
-      !   stop          
-      ! end if
 
 !      end if
     end do
