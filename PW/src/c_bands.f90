@@ -623,7 +623,7 @@ subroutine set_wavefunction_gauge(ik)
         evc(ig,ib1) = evc_rotated(ig_l2g(igk_k(ig,ik)))
       end do
 
-      print*, ik,ib1,sum(evc(:,ib1)*conjg(evc(:,ib1)))
+!      print*, ik,ib1,sum(evc(:,ib1)*conjg(evc(:,ib1)))
       
 !      end if
     end do
