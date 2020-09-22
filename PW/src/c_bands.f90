@@ -261,8 +261,8 @@ subroutine set_wavefunction_gauge(ik)
   logical :: any_prob, in_scf, in_nscf
   integer, parameter :: i_unit = 52
 
-  in_scf = (trim(calculation) == 'scf') .and. (restart) 
-  in_nscf = (trim(calculation) == 'nscf') .or. (trim(calculation) /= 'bands')
+  in_scf = (trim(calculation) == 'scf') ! .and. (restart) 
+  in_nscf = (trim(calculation) == 'nscf') .or. (trim(calculation) == 'bands')
   
   if ( (.not. in_scf) .and. (.not. in_nscf) ) then
     return
@@ -623,6 +623,8 @@ subroutine set_wavefunction_gauge(ik)
         evc(ig,ib1) = evc_rotated(ig_l2g(igk_k(ig,ik)))
       end do
 
+      print*, ik,ib1,sum(evc(:,ib1)*conjg(evc(:,ib1)))
+      
 !      end if
     end do
     
