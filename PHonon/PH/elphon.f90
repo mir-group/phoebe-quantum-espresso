@@ -1346,8 +1346,339 @@ SUBROUTINE elphsum_simple
      
 
 END SUBROUTINE elphsum_simple
-   
-!-----------------------------------------------------------------------
+  !
+  !------------------------------------------------------------
+  !
+  subroutine elphfil_phoebe(iq, xk_collect, ikks_collect, et_collect, &
+       el_ph_mat_collect)
+    use constants, only: tpi
+    use io_files, only: tmp_dir, prefix
+    USE cell_base, ONLY : alat, at, bg
+    USE disp, ONLY : nq1, nq2, nq3, x_q
+    USE io_global, ONLY : ionode
+    USE ions_base, ONLY : nat, ityp, tau
+    USE kinds, ONLY : DP
+    USE klist, ONLY : nkstot
+    USE start_k, ONLY : nk1, nk2, nk3, k1, k2, k3
+    USE lsda_mod, ONLY : nspin
+    USE wvfct, ONLY : nbnd
+    USE klist, ONLY : nelec
+    USE qpoint, ONLY : nksqtot
+    USE symm_base, ONLY : s, nsym, t_rev, irt, time_reversal, ft
+    ! ft: FractionalTranslations(3,48) in crystal coords
+    USE modes, ONLY : nmodes
+    USE dynmat, ONLY : dyn, w2
+    implicit none
+    ! et: KS energies in Ry
+    ! xk: kpoints in cartesian coords
+    ! ikks: index of computed k in the full list of ks
+    ! iq: index of current irreducible qpoint
+    ! el_ph: g coupling on the irreducible set of k/q
+    !        for now, we are using the full set of k
+    real(dp), intent(in) :: et_collect(nbnd,nkstot), xk_collect(3,nkstot)
+    integer, intent(in) :: ikks_collect(nksqtot)
+    integer, intent(in) :: iq ! , nkstot, nbnd, nksqtot
+    complex(dp), intent(in) :: el_ph_mat_collect(nbnd, nbnd, nksqtot, nmodes)
+    !
+    logical, save :: first = .true.
+    integer :: iqq, iq_phonon, ik_phonon, iq_rotated, ik_rotated, &
+         isym, iq_star, iq_full, iksq, i, j, n_star, unit_phoebe, &
+         ii, jj, ios, kk, ll
+    integer, save :: nk, nq, nq_irr
+    integer, allocatable, save :: k_equiv(:), q_equiv(:), wk(:), wq(:)
+    real(dp), allocatable, save :: kgrid_full(:,:), qgrid_full(:,:)
+    real(dp), allocatable :: q_star(:,:), energies_unfolded(:,:)
+    complex(dp), allocatable :: gq_coupling(:,:,:,:,:)
+    real(dp) :: k_rotated(3), q_rotated(3), q_phonon(3), k_phonon(3), qdiff(3)
+    character(len=4) :: iq_char
+    character(len=80) :: file_phoebe
+    character(len=80) :: file_xml
+    logical :: q_in_the_list, k_in_the_list, found
+    character(len=200) :: line
+    integer, external :: find_free_unit
+
+    ! index of symmetry that allows the rotation:
+    integer, allocatable :: k_equiv_symmetry(:), q_equiv_symmetry(:) 
+
+    if ( .not. ionode ) return
+
+    if ( first ) then
+
+      !----------------------------------------------
+      ! the first time this is subroutine called,
+      ! we do some sanity checks that the calculation has been setup as we want
+      ! we also check for the symmetries of the k/q meshes
+      
+      first = .false.
+      nk = nk1 * nk2 * nk3
+
+      if ( nk == 0 ) then
+        call errore("phoebe", &
+             "We must run a nscf calculation before ph.x with automatic grid", 1)
+      end if
+      
+      nq = nq1 * nq2 * nq3
+      allocate(kgrid_full(3,nk))
+      allocate(qgrid_full(3,nq))
+      allocate(k_equiv(nk))
+      allocate(q_equiv(nq))
+      allocate(k_equiv_symmetry(nk))
+      allocate(q_equiv_symmetry(nq))
+      allocate(wk(nk))
+      allocate(wq(nq))
+      call find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, kgrid_full, &
+           k_equiv, wk, k_equiv_symmetry)
+      call find_irreducible_grid(nq1, nq2, nq3, 0, 0, 0, qgrid_full, &
+           q_equiv, wq, q_equiv_symmetry)
+
+      do i = 1,nk
+        q_phonon = qgrid_full(:,i)
+        CALL cryst_to_cart(1, q_phonon, at, -1)
+        ! print*, i, q_equiv(i), q_phonon
+        isym = q_equiv_symmetry(i)
+        ! print*, fractional_translation(:,isym)
+      end do
+      ! stop
+      
+      nq_irr = 0
+      do i = 1,nq
+        if ( q_equiv(i) == i ) then
+          nq_irr = nq_irr + 1
+        end if
+      end do
+
+      ! check commensurability of grids
+      if ( nk1 >= nq1 ) then
+        if ( mod(nk1,nq1) /= 0 ) then
+          call errore("phoebe", "k and q grids are incommensurate", 1)
+          end if
+      else
+        call errore("phoebe", "q grid larger than k grid", 1)
+      end if
+      if ( nk2 >= nq2 ) then
+        if ( mod(nk2,nq2) /= 0 ) then
+          call errore("phoebe", "k and q grids are incommensurate", 1)
+        end if
+      else
+        call errore("phoebe", "q grid larger than k grid", 1)
+      end if
+      if ( nk3 >= nq3 ) then
+        if ( mod(nk3,nq3) /= 0 ) then
+          call errore("phoebe", "k and q grids are incommensurate", 1)
+        end if
+      else
+        call errore("phoebe", "q grid larger than k grid", 1)
+      end if
+
+      if ( k1 /= 0 .or. k2 /= 0 .or. k3 /= 0 ) then
+        call errore("phoebe", "k grid must not use Gamma offset", 1)
+      end if
+
+      if ( nk1 == 0 .or. nk2 == 0 .or. nk3 == 0 .or. &
+           nq1 == 0 .or. nq2 == 0 .or. nq3 == 0 ) then
+        call errore("phoebe", "Must use automatic grids in quantum espresso", 1)
+      end if
+
+      ! Here I check that we restarted from a nscf run
+
+      file_xml = trim(tmp_dir) // "../" // trim(prefix) // ".phoebe.scf.0000.dat"
+      ios = 0
+      open(unit = unit_phoebe, file = TRIM(file_xml), status = 'old', iostat = ios)
+      if ( ios /= 0 ) then
+        call errore("phoebe", &
+             "you must use the patch on pw.x calculation ahead of running ph.x", 1)
+      end if
+            
+    end if
+
+    !------------------------------------------------
+    ! In the first iteration, we write more info to file (meshes, crystal info, etc)
+    
+    if ( iq == 1 ) then
+
+      ! Note: this unfolding doesn't work with spin
+      allocate(energies_unfolded(nbnd,nk))
+      energies_unfolded = 0.
+      do i = 1,nkstot
+        k_phonon = xk_collect(:,i) ! wavevector used in the phonon code
+        CALL cryst_to_cart(1, k_phonon, at, -1) ! fold to crystal coords
+        call get_point_index(iq_full, k_phonon, nk1, nk2, nk3, k1, k2, k3,&
+             .false.)
+        ! iq_full is the index of the vector in xk_collect inside my list
+        do j = 1,nk
+          if ( k_equiv(j) == iq_full ) then
+            energies_unfolded(:,j) = et_collect(:,i)
+          end if
+        end do
+      end do
+        
+      unit_phoebe = find_free_unit()
+      file_phoebe = trim(prefix) // ".phoebe.0000.dat"
+      open(unit = unit_phoebe, file = TRIM(file_phoebe), form = 'formatted', &
+           access = 'sequential', status = 'replace', iostat = ios)
+      write(unit_phoebe,*) "Phoebe-QE"
+      write(unit_phoebe,*) nbnd, nelec, nspin
+      write(unit_phoebe,*) nq1, nq2, nq3, nk1, nk2, nk3
+      ! Crystal
+      write(unit_phoebe,*)  alat, nat
+      write(unit_phoebe,*) ((at(ii, jj)*alat, ii = 1, 3), jj = 1, 3)
+      write(unit_phoebe,*) ((bg(ii, jj)*tPi/alat, ii = 1, 3), jj = 1, 3)
+      write(unit_phoebe,*) (ityp(ii), ii = 1, nat)
+      do jj = 1,nat
+        write(unit_phoebe,*) (tau(ii, jj)*alat, ii = 1, 3)
+      end do
+      ! all q-points
+      write(unit_phoebe,*) nq, nq_irr
+      do jj = 1,nq
+        write(unit_phoebe,*) (qgrid_full(ii, jj), ii = 1, 3)
+      end do
+      ! all k-points
+      write(unit_phoebe,*) nk
+      do jj = 1,nk
+        write(unit_phoebe,*) (kgrid_full(ii, jj), ii = 1, 3)
+      end do
+      ! write energies at all k points
+      do jj = 1,nk
+        write(unit_phoebe,*) (energies_unfolded(ii, jj), ii = 1, nbnd)
+      end do
+      close(unit_phoebe)
+    end if
+    !
+    !----------------------------------------------------------------------------
+    ! Here we use g(Sk,q) = g(k,S^{-1}q) to unfold the coupling
+    !
+    q_phonon = x_q(:,iq)    
+    CALL cryst_to_cart(1, q_phonon, at, -1)
+    
+    ! iq_full is the index of q (from ph.x) in my grid of q points
+    call get_point_index(iq_full, q_phonon, nq1, nq2, nq3, 0, 0, 0, .false.)
+    
+    ! check q point in grid
+    if ( q_equiv(iq_full) /= iq_full ) then
+      call errore("phoebe", "qpoint not ordered as expected 1", 1)
+    end if
+
+    qdiff(:) = q_phonon(:) -  qgrid_full(:,iq_full)
+    qdiff = qdiff - nint(qdiff)
+
+    if ( sum(qdiff**2) > 1.0d-5 ) then
+      call errore("phoebe", "qpoint grid not ordered as expected 2", 1)
+    end if
+    
+    ! number of equivalent q points in this star
+    n_star = 0
+    do iqq = 1,nq
+      if ( q_equiv(iqq) == iq_full ) then
+        n_star = n_star + 1
+      end if
+    end do
+    allocate(q_star(3,n_star))
+    j = 0
+    do iqq = 1,nq
+      if ( q_equiv(iqq) == iq_full ) then
+        j = j + 1
+        q_star(:,j) = qgrid_full(:,iqq)
+      end if
+    end do
+    
+    allocate(gq_coupling(nbnd, nbnd, nk, nmodes, n_star))
+    gq_coupling = cmplx(0., 0., kind=dp)
+
+    ! here we actually apply g(Sk,Sq^irr) = g(k,q^irr)
+    
+    do iksq = 1,nksqtot ! loop over the k's computed by phonon.x
+      ! (xk_collect(3, nkstot) k point coordinates
+      ! ikks_collect(nksqtot) ! indeces of k vectors in the loop nksqtot
+      ik_phonon = ikks_collect(iksq) ! index of k in xk_collect list
+      k_phonon = xk_collect(:,ik_phonon) ! k wavevector in cartesian coordinates
+      CALL cryst_to_cart(1, k_phonon, at, -1) ! in crystal coords
+      !
+      do isym = 1,nsym
+        k_rotated = matmul(s(:,:,isym), k_phonon)
+        q_rotated = matmul(s(:,:,isym), q_phonon) ! q_phonon is the irred q-point
+        k_rotated(:) = k_rotated(:) - nint( k_rotated(:) )
+        q_rotated(:) = q_rotated(:) - nint( q_rotated(:) )
+        if ( t_rev(isym) == 1 ) then
+          k_rotated = - k_rotated
+          q_rotated = - q_rotated
+        end if
+        call is_point_in_grid(k_in_the_list, k_rotated, nk1, nk2, nk3, 0, 0, 0, .false.)
+        call is_point_in_grid(q_in_the_list, q_rotated, nq1, nq2, nq3, 0, 0, 0, .false.)
+        !
+        if ( k_in_the_list .and. q_in_the_list ) then
+          ! index of point in the full grid
+          call get_point_index(ik_rotated, k_rotated, nk1, nk2, nk3, 0, 0, 0, .false.)
+          call get_point_index(iq_rotated, q_rotated, nq1, nq2, nq3, 0, 0, 0, .false.)
+          
+          iq_star = 0
+          do iqq = 1,n_star
+            if ( sum((qgrid_full(:,iq_rotated)-q_star(:,iqq))**2) < 1.0d-5 ) then
+              iq_star = iqq
+              exit
+            end if
+          end do
+          if ( iq_star == 0 ) call errore("phoebe", "q not found in star",1)
+          
+          gq_coupling(:,:,ik_rotated,:,iq_star) = el_ph_mat_collect(:,:,iksq,:)
+        end if
+        !
+        if ( time_reversal ) then
+          call is_point_in_grid(k_in_the_list, k_rotated, nk1, nk2, nk3, &
+               k1, k2, k3, .true.)
+          call is_point_in_grid(q_in_the_list, q_rotated, nq1, nq2, nq3, &
+               0, 0, 0, .true.)
+          IF ( k_in_the_list .and. q_in_the_list ) THEN
+            call get_point_index(ik_rotated, k_rotated, nk1, nk2, nk3, &
+                 k1, k2, k3, .true.)
+            call get_point_index(iq_rotated, q_rotated, nq1, nq2, nq3, &
+                 0, 0, 0, .true.)
+            
+            iq_star = 0
+            do iqq = 1,n_star
+              if (sum((qgrid_full(:,iq_rotated)-q_star(:,iqq))**2) < 1.0d-5) then
+                iq_star = iqq
+                exit
+              end if
+            end do
+            if ( iq_star == 0 ) call errore("phoebe", "q not found in star",1)
+            
+            gq_coupling(:, :, ik_rotated, :, iq_star) = &
+                 el_ph_mat_collect(:, :, iksq, :)
+          end if
+        end if
+        !
+      end do ! end nsym
+    end do
+
+    !---------- Dump results to file -------------
+
+    unit_phoebe = find_free_unit()
+    write(iq_char,"(I4.4)") iq
+    file_phoebe = trim(prefix) // ".phoebe." // trim(iq_char) // ".dat"
+    open(unit = unit_phoebe, file = TRIM(file_phoebe), form = 'formatted', &
+         access = 'sequential', status = 'replace', iostat = ios)
+    write(unit_phoebe,*) n_star
+    do iqq = 1,n_star
+      write(unit_phoebe,*) (q_star(ii,iqq), ii = 1,3)
+    end do
+    write(unit_phoebe,*) (w2(ii), ii = 1,nmodes) ! ph energies
+    do jj = 1,nmodes
+      do ii = 1,nmodes
+        write(unit_phoebe,"(2ES24.16)") dyn(ii,jj) ! ph eigenvectors
+      end do
+    end do
+    write(unit_phoebe,*) ""
+    write(unit_phoebe,"(2ES24.16)") (((((gq_coupling(ii, jj, kk, ll, iqq), &
+         ii=1,nbnd), jj=1,nbnd), kk=1,nk), ll=1,nmodes), iqq=1,n_star)
+    close(unit_phoebe)
+    
+    deallocate(gq_coupling)
+    
+    return
+  end subroutine elphfil_phoebe
+  !
+  !-----------------------------------------------------------------------
+  !
 SUBROUTINE elphfil_epa(iq)
   !-----------------------------------------------------------------------
   !
@@ -1529,6 +1860,9 @@ SUBROUTINE elphfil_epa(iq)
      CLOSE (unit = iuelph, status = 'keep')
   ENDIF
   CALL cryst_to_cart(nkstot, xk_collect, bg, 1)
+
+  call elphfil_phoebe(iq, xk_collect, ikks_collect, et_collect, el_ph_mat_collect)
+
   DEALLOCATE(xk_collect)
   DEALLOCATE(wk_collect)
   DEALLOCATE(et_collect)
