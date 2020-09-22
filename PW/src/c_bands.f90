@@ -66,7 +66,7 @@ subroutine find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, xkg, equiv, &
   implicit none
   integer, intent(in) :: nk1, nk2, nk3, k1, k2, k3
   integer, intent(out) :: equiv(nk1*nk2*nk3), wkk(nk1*nk2*nk3), &
-       equiv_symmetry(nk1*nk2*nk3,2)
+       equiv_symmetry(nk1*nk2*nk3)
   real(dp), intent(out) :: xkg(3,nk1*nk2*nk3)
   !
   integer :: i, j, k, n, nk, nkr, ns, ik
@@ -174,7 +174,7 @@ subroutine find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, xkg, equiv, &
       if (in_the_list) THEN
         call get_point_index(n, xkr, nk1, nk2, nk3, k1, k2, k3, .false.)
         if ( equiv(ik) == n ) then
-          equiv_symmetry(ik,1) = ns
+          equiv_symmetry(ik) = ns
           cycle
         end if
       end if
@@ -182,7 +182,7 @@ subroutine find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, xkg, equiv, &
     
 !    print*, ik, equiv(ik), equiv_symmetry(ik,1), sname(equiv_symmetry(ik,1))
 !    print*, xkr, xkg(:,ik), xkg(:,n)
-    if ( equiv_symmetry(ik,1) == 1 ) then
+    if ( equiv_symmetry(ik) == 1 ) then
       call errore("phoebe", "Failed to find rotation",1)
     end if
     
@@ -245,7 +245,7 @@ subroutine set_wavefunction_gauge(ik)
        ios, ik_irr, isym, nbnd_, ig_rotated, ig1, ig2, ig, ib1_
   integer, save :: nk_full=0, nk1_, nk2_, nk3_
   integer, allocatable :: gmap(:)
-  integer, allocatable, save :: xk_equiv(:), xk_equiv_symmetry(:,:),xk_weight(:)
+  integer, allocatable, save :: xk_equiv(:), xk_equiv_symmetry(:), xk_weight(:)
   real(dp) :: theta, rotation(3,3), inv_rotation(3,3), translation(3), diff, &
        arg, this_rotated_g(3), this_g(3), xk_crys(3)
   real(dp), allocatable, save :: g_global(:,:), xk_full_cart(:,:), &
@@ -406,7 +406,7 @@ subroutine set_wavefunction_gauge(ik)
     allocate(xk_full_cryst(3,nk_full))
     allocate(xk_equiv(nk_full))
     allocate(xk_weight(nk_full))
-    allocate(xk_equiv_symmetry(nk_full,2))
+    allocate(xk_equiv_symmetry(nk_full))
     call find_irreducible_grid(nk1_, nk2_, nk3_, k1, k2, k3, xk_full_cryst, &
          xk_equiv, xk_weight, xk_equiv_symmetry)
     
@@ -487,7 +487,7 @@ subroutine set_wavefunction_gauge(ik)
     ! Find irreducible index
 
     ik_irr = xk_equiv(ik_global)
-    isym = xk_equiv_symmetry(ik_global,1)
+    isym = xk_equiv_symmetry(ik_global)
     
     rotation = sr(:,:,isym) ! such that R*k^red = k^irr, in cartesian space
     inv_rotation = transpose(rotation) ! Rotations are unitary
