@@ -1364,7 +1364,7 @@ END SUBROUTINE elphsum_simple
     USE wvfct, ONLY : nbnd
     USE klist, ONLY : nelec
     USE qpoint, ONLY : nksqtot
-    USE symm_base, ONLY : s, nsym, t_rev, irt, time_reversal, ft
+    USE symm_base, ONLY : s, sr, nsym, t_rev, irt, time_reversal, ft
     ! ft: FractionalTranslations(3,48) in crystal coords
     USE modes, ONLY : nmodes
     USE dynmat, ONLY : dyn, w2
@@ -1398,8 +1398,17 @@ END SUBROUTINE elphsum_simple
     integer, external :: find_free_unit
 
     ! index of symmetry that allows the rotation:
-    integer, allocatable :: k_equiv_symmetry(:), q_equiv_symmetry(:) 
+    integer, allocatable, save :: k_equiv_symmetry(:), q_equiv_symmetry(:) 
 
+    complex(dp), allocatable :: rotated_dynmat(:,:,:)
+    real(dp), allocatable :: q_star_cartesian(:,:), rotated_tau(:,:)
+    real(dp) :: vec(3), rotation(3,3), inv_rotation(3,3), translation(3), arg, &
+         a1(3), a2(3), a3(3)         
+    integer, allocatable :: kappa_to_k(:)
+    integer :: kappa, k, ix, iy, iz, i_cart, j_cart, i_eigenmode
+    complex(dp) :: phase
+
+    
     if ( .not. ionode ) return
 
     if ( first ) then
@@ -1650,6 +1659,100 @@ END SUBROUTINE elphsum_simple
       end do ! end nsym
     end do
 
+    !------------ Rotate the phonon eigenvectors ------------------
+    ! I must do this, so that we can keep their phase information,
+    ! needed to Fourier transform them to real space
+    ! Eq. 2.33, Maradudin & Vosko, Rev. Mod. Phys. (1968)
+    ! https://journals.aps.org/rmp/abstract/10.1103/RevModPhys.40.1
+
+    allocate(rotated_dynmat(nmodes,nmodes,n_star))
+    rotated_dynmat = cmplx(0.,0.,kind=dp)
+    rotated_dynmat(:,:,1) = dyn(:,:) ! the first one I know already
+
+    allocate(q_star_cartesian(3,n_star))
+    q_star_cartesian = q_star
+    do iq_star = 1,n_star
+      call cryst_to_cart(1, q_star_cartesian(:,iq_star), bg, 1)
+      print*, q_star_cartesian(:,iq_star)
+    end do
+
+    do ii = 1,nat
+      print*, tau(:,ii)
+    end do
+    
+    a1 = at(1,:)
+    a2 = at(2,:)
+    a3 = at(3,:)
+    print*, a1, a2, a3 ! check I picked the right index 
+    
+    if ( n_star > 1 ) then ! if not, nothing to rotate
+      allocate(kappa_to_k(nat))
+      allocate(rotated_tau(3,nat))
+      do iq_star = 2,n_star
+        ! step 1: identify the symmetry S such that q^rotated = S q^irreducible
+
+        ! iqq is the index of iq_star in the full grid
+        call get_point_index(iqq, q_star(:,iq_star), nq1, nq2, nq3, 0, 0, 0, .false.)
+        ! conveniently, I computed already what is the symmetry to use here
+        isym = q_equiv_symmetry(iq_star)        
+        rotation = sr(:,:,isym)
+        inv_rotation = transpose(rotation)
+        translation(:) = ft(:,isym)
+        ! transform in cartesian coordinates
+        call cryst_to_cart(1,translation(:),at,+1)
+
+        ! step 2: build the mapping kappa_to_k
+        kappa_to_k = 0
+        do kappa = 1,nat
+          rotated_tau(:,kappa) = matmul(rotation,tau(:,kappa))
+          k = 0
+          do ii = 1,nat
+            do ix = -2,2
+              do iy = -2,2
+                do iz = -2,2
+                  vec(:) = rotated_tau(:,kappa) &
+                       + ix * a1(:) + iy * a2(:) + iz * a3(:)
+                  if ( sum( ( vec - tau(:,ii))**2 ) < 1.0e-6 ) then
+                    k = ii
+                  end if
+                end do
+              end do
+            end do
+          end do
+          if ( k == 0 ) then
+            call errore("phoebe", "tau not folded", 1)
+          end if
+          kappa_to_k(kappa) = k
+        end do
+        
+        ! step 3: rotation
+
+        print*, q_star_cartesian(:,1) ! check it's in cartesian coordinates
+        
+        do kappa = 1,nat
+          k = kappa_to_k(kappa)
+          vec(:) = matmul(inv_rotation,tau(:,kappa)-translation) - tau(:,k)
+          arg = tpi * sum( q_star_cartesian(:,1) * vec(:) )
+          phase = cmplx(cos(arg),sin(arg),kind=dp)          
+          do i_eigenmode = 1,nmodes
+            do i_cart = 1,3
+              do j_cart = 1,3
+                ii = 3 * (k-1) + i_cart
+                jj = 3 * (kappa-1) + j_cart
+                rotated_dynmat(ii,i_eigenmode,iq_star) = &
+                     rotated_dynmat(ii,i_eigenmode,iq_star) &
+                     + rotation(i_cart,j_cart) * phase * dyn(jj,i_eigenmode)
+              end do
+            end do
+          end do
+        end do
+      end do
+      deallocate(kappa_to_k)
+      deallocate(rotated_tau)
+    end if
+
+    stop
+
     !---------- Dump results to file -------------
 
     unit_phoebe = find_free_unit()
@@ -1659,12 +1762,17 @@ END SUBROUTINE elphsum_simple
          access = 'sequential', status = 'replace', iostat = ios)
     write(unit_phoebe,*) n_star
     do iqq = 1,n_star
-      write(unit_phoebe,*) (q_star(ii,iqq), ii = 1,3)
+      write(unit_phoebe,*) (q_star(ii,iqq), ii = 1,3) ! crystal coords
+    end do
+    do iqq = 1,n_star
+      write(unit_phoebe,*) (q_star_cartesian(ii,iqq), ii = 1,3)
     end do
     write(unit_phoebe,*) (w2(ii), ii = 1,nmodes) ! ph energies
-    do jj = 1,nmodes
-      do ii = 1,nmodes
-        write(unit_phoebe,"(2ES24.16)") dyn(ii,jj) ! ph eigenvectors
+    do iqq = 1,n_star
+      do jj = 1,nmodes
+        do ii = 1,nmodes
+          write(unit_phoebe,"(2ES24.16)") rotated_dynmat(ii,jj,iqq) ! ph eigenvectors
+        end do
       end do
     end do
     write(unit_phoebe,*) ""
@@ -1673,7 +1781,9 @@ END SUBROUTINE elphsum_simple
     close(unit_phoebe)
     
     deallocate(gq_coupling)
-    
+
+    deallocate(rotated_dynmat, q_star_cartesian)
+
     return
   end subroutine elphfil_phoebe
   !
