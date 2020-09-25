@@ -188,6 +188,9 @@ SUBROUTINE elphon()
            ENDDO
         ENDDO
 
+        print*, "Entered here"
+        print*, dyn(1,:)
+        
         CALL read_dyn_mat_tail(nat)
   
         deallocate( phip )
@@ -1351,12 +1354,15 @@ END SUBROUTINE elphsum_simple
   !
   subroutine elphfil_phoebe(iq, xk_collect, ikks_collect, et_collect, &
        el_ph_mat_collect)
+
+    USE constants, ONLY : ry_to_thz, ry_to_cmm1, amu_ry
+    
     use constants, only: tpi
     use io_files, only: tmp_dir, prefix
     USE cell_base, ONLY : alat, at, bg
     USE disp, ONLY : nq1, nq2, nq3, x_q
     USE io_global, ONLY : ionode
-    USE ions_base, ONLY : nat, ityp, tau
+    USE ions_base, ONLY : nat, ityp, tau, amass
     USE kinds, ONLY : DP
     USE klist, ONLY : nkstot
     USE start_k, ONLY : nk1, nk2, nk3, k1, k2, k3
@@ -1400,14 +1406,16 @@ END SUBROUTINE elphsum_simple
     ! index of symmetry that allows the rotation:
     integer, allocatable, save :: k_equiv_symmetry(:), q_equiv_symmetry(:) 
 
-    complex(dp), allocatable :: rotated_dynmat(:,:,:)
     real(dp), allocatable :: q_star_cartesian(:,:), rotated_tau(:,:)
     real(dp) :: vec(3), rotation(3,3), inv_rotation(3,3), translation(3), arg, &
          a1(3), a2(3), a3(3)         
     integer, allocatable :: kappa_to_k(:)
     integer :: kappa, k, ix, iy, iz, i_cart, j_cart, i_eigenmode
     complex(dp) :: phase
-
+!    real(dp), allocatable :: freq(:)
+!    complex(dp), allocatable :: eigvec(:,:)
+    complex(dp), allocatable :: ph_eigenvector(:,:,:), ph_star_eigenvector(:,:,:,:)
+    
     
     if ( .not. ionode ) return
 
@@ -1665,25 +1673,52 @@ END SUBROUTINE elphsum_simple
     ! Eq. 2.33, Maradudin & Vosko, Rev. Mod. Phys. (1968)
     ! https://journals.aps.org/rmp/abstract/10.1103/RevModPhys.40.1
 
-    allocate(rotated_dynmat(nmodes,nmodes,n_star))
-    rotated_dynmat = cmplx(0.,0.,kind=dp)
-    rotated_dynmat(:,:,1) = dyn(:,:) ! the first one I know already
-
+    ! Note: a1 is in alat units, cartesian cords
+    ! tau is in alat units, cartesian coords
+    
     allocate(q_star_cartesian(3,n_star))
     q_star_cartesian = q_star
     do iq_star = 1,n_star
       call cryst_to_cart(1, q_star_cartesian(:,iq_star), bg, 1)
-      print*, q_star_cartesian(:,iq_star)
-    end do
-
-    do ii = 1,nat
-      print*, tau(:,ii)
     end do
     
-    a1 = at(1,:)
-    a2 = at(2,:)
-    a3 = at(3,:)
-    print*, a1, a2, a3 ! check I picked the right index 
+    a1 = at(:,1)
+    a2 = at(:,2)
+    a3 = at(:,3)
+
+    ! Note: I checked that dyn contains the eigenvectors
+    ! normalized by sqrt of atomic mass
+    ! to verify that, run:
+    ! allocate(eigvec(3*nat,3*nat))
+    ! eigvec = dyn * sqrt(amass(1) * amu_ry)
+    ! dyn = cmplx(0.,0.,kind=dp)
+    ! do ii = 1,3*nat
+    !   dyn(ii,ii) = sqrt(w2(ii))
+    ! end do
+    ! dyn = matmul(eigvec, dyn)
+    ! dyn = matmul(dyn,transpose(eigvec))
+    ! allocate(freq(3*nat))
+    ! CALL cdiagh (3*nat, dyn, 3*nat, freq, eigvec)
+    ! print*, freq*ry_to_cmm1
+    ! print*, w2*ry_to_cmm1
+    ! print*, eigvec(:,1) ! this gives the same pattern of *.dyn* files
+    ! deallocate(eigvec)
+
+    allocate(ph_eigenvector(3,nat,3*nat))
+    ph_eigenvector = cmplx(0.,0.,kind=dp)
+    do k = 1,nat
+      do i_cart = 1,3
+        ii = 3 * (k-1) + i_cart
+        do jj = 1,3*nat
+          ph_eigenvector(i_cart,k,jj) = dyn(ii,jj)
+        end do
+      end do
+    end do
+    allocate(ph_star_eigenvector(3,nat,3*nat,n_star))
+    ph_star_eigenvector = cmplx(0.,0.,kind=dp)
+    ph_star_eigenvector(:,:,:,1) = ph_eigenvector
+    
+    !--------------------------------------------
     
     if ( n_star > 1 ) then ! if not, nothing to rotate
       allocate(kappa_to_k(nat))
@@ -1694,7 +1729,7 @@ END SUBROUTINE elphsum_simple
         ! iqq is the index of iq_star in the full grid
         call get_point_index(iqq, q_star(:,iq_star), nq1, nq2, nq3, 0, 0, 0, .false.)
         ! conveniently, I computed already what is the symmetry to use here
-        isym = q_equiv_symmetry(iq_star)        
+        isym = q_equiv_symmetry(iqq)        
         rotation = sr(:,:,isym)
         inv_rotation = transpose(rotation)
         translation(:) = ft(:,isym)
@@ -1704,15 +1739,16 @@ END SUBROUTINE elphsum_simple
         ! step 2: build the mapping kappa_to_k
         kappa_to_k = 0
         do kappa = 1,nat
-          rotated_tau(:,kappa) = matmul(rotation,tau(:,kappa))
+          ! note how the translation must be applied before the rotation
+          rotated_tau(:,kappa) = matmul(rotation,tau(:,kappa) + translation)
           k = 0
           do ii = 1,nat
-            do ix = -2,2
-              do iy = -2,2
-                do iz = -2,2
+            do ix = -3,3
+              do iy = -3,3
+                do iz = -3,3
                   vec(:) = rotated_tau(:,kappa) &
                        + ix * a1(:) + iy * a2(:) + iz * a3(:)
-                  if ( sum( ( vec - tau(:,ii))**2 ) < 1.0e-6 ) then
+                  if ( sum( ( vec - tau(:,ii))**2 ) < 1.0e-5 ) then
                     k = ii
                   end if
                 end do
@@ -1726,8 +1762,6 @@ END SUBROUTINE elphsum_simple
         end do
         
         ! step 3: rotation
-
-        print*, q_star_cartesian(:,1) ! check it's in cartesian coordinates
         
         do kappa = 1,nat
           k = kappa_to_k(kappa)
@@ -1737,10 +1771,9 @@ END SUBROUTINE elphsum_simple
           do i_eigenmode = 1,nmodes
             do i_cart = 1,3
               do j_cart = 1,3
-                ii = 3 * (k-1) + i_cart
                 jj = 3 * (kappa-1) + j_cart
-                rotated_dynmat(ii,i_eigenmode,iq_star) = &
-                     rotated_dynmat(ii,i_eigenmode,iq_star) &
+                ph_star_eigenvector(i_cart,k,i_eigenmode,iq_star) =        &
+                     ph_star_eigenvector(i_cart,k,i_eigenmode,iq_star)     &
                      + rotation(i_cart,j_cart) * phase * dyn(jj,i_eigenmode)
               end do
             end do
@@ -1751,9 +1784,9 @@ END SUBROUTINE elphsum_simple
       deallocate(rotated_tau)
     end if
 
-    stop
-
+    !---------------------------------------------
     !---------- Dump results to file -------------
+    !---------------------------------------------
 
     unit_phoebe = find_free_unit()
     write(iq_char,"(I4.4)") iq
@@ -1770,8 +1803,10 @@ END SUBROUTINE elphsum_simple
     write(unit_phoebe,*) (w2(ii), ii = 1,nmodes) ! ph energies
     do iqq = 1,n_star
       do jj = 1,nmodes
-        do ii = 1,nmodes
-          write(unit_phoebe,"(2ES24.16)") rotated_dynmat(ii,jj,iqq) ! ph eigenvectors
+        do k = 1,nat
+          do i_cart = 1,3
+            write(unit_phoebe,"(2ES24.16)") ph_star_eigenvector(i_cart, k, jj, iqq)
+          end do
         end do
       end do
     end do
@@ -1782,8 +1817,9 @@ END SUBROUTINE elphsum_simple
     
     deallocate(gq_coupling)
 
-    deallocate(rotated_dynmat, q_star_cartesian)
-
+    deallocate(q_star_cartesian)
+    deallocate(ph_star_eigenvector, ph_eigenvector)
+    
     return
   end subroutine elphfil_phoebe
   !
