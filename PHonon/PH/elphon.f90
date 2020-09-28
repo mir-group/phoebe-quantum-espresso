@@ -1372,7 +1372,7 @@ END SUBROUTINE elphsum_simple
     USE qpoint, ONLY : nksqtot
     USE symm_base, ONLY : s, sr, nsym, t_rev, irt, time_reversal, ft
     ! ft: FractionalTranslations(3,48) in crystal coords
-    USE modes, ONLY : nmodes
+    USE modes, ONLY : nmodes, u
     USE dynmat, ONLY : dyn, w2
     implicit none
     ! et: KS energies in Ry
@@ -1383,48 +1383,45 @@ END SUBROUTINE elphsum_simple
     !        for now, we are using the full set of k
     real(dp), intent(in) :: et_collect(nbnd,nkstot), xk_collect(3,nkstot)
     integer, intent(in) :: ikks_collect(nksqtot)
-    integer, intent(in) :: iq ! , nkstot, nbnd, nksqtot
+    integer, intent(in) :: iq
     complex(dp), intent(in) :: el_ph_mat_collect(nbnd, nbnd, nksqtot, nmodes)
     !
     logical, save :: first = .true.
+    integer, allocatable, save :: k_equiv_symmetry(:), q_equiv_symmetry(:), &
+         k_equiv(:), q_equiv(:), wk(:), wq(:)
+    integer, save :: nk, nq, nq_irr
+    real(dp), allocatable, save :: kgrid_full(:,:), qgrid_full(:,:)
+    !
     integer :: iqq, iq_phonon, ik_phonon, iq_rotated, ik_rotated, &
          isym, iq_star, iq_full, iksq, i, j, n_star, unit_phoebe, &
-         ii, jj, ios, kk, ll
-    integer, save :: nk, nq, nq_irr
-    integer, allocatable, save :: k_equiv(:), q_equiv(:), wk(:), wq(:)
-    real(dp), allocatable, save :: kgrid_full(:,:), qgrid_full(:,:)
-    real(dp), allocatable :: q_star(:,:), energies_unfolded(:,:)
-    complex(dp), allocatable :: gq_coupling(:,:,:,:,:)
-    real(dp) :: k_rotated(3), q_rotated(3), q_phonon(3), k_phonon(3), qdiff(3)
+         ii, jj, ios, kk, ll, kappa, k, ix, iy, iz, i_cart, j_cart, &
+         i_eigenmode, i_pattern, i_mode
+    integer, allocatable :: kappa_to_k(:)
+    real(dp) :: vec(3), rotation(3,3), inv_rotation(3,3), translation(3), arg, &
+         a1(3), a2(3), a3(3), k_rotated(3), q_rotated(3), q_phonon(3), &
+         k_phonon(3), qdiff(3)
+    real(dp), allocatable :: q_star(:,:), energies_unfolded(:,:), &
+         q_star_cartesian(:,:), rotated_tau(:,:)
+    complex(dp) :: phase
+    complex(dp), allocatable :: gq_coupling(:,:,:,:,:), ph_eigenvector(:,:,:), &
+         ph_star_eigenvector(:,:,:,:), tmp_el_ph_mat(:,:,:,:), &
+         el_ph_mat_cartesian(:,:,:,:)
     character(len=4) :: iq_char
-    character(len=80) :: file_phoebe
-    character(len=80) :: file_xml
+    character(len=200) :: file_phoebe, file_xml, line
     logical :: q_in_the_list, k_in_the_list, found
-    character(len=200) :: line
     integer, external :: find_free_unit
 
-    ! index of symmetry that allows the rotation:
-    integer, allocatable, save :: k_equiv_symmetry(:), q_equiv_symmetry(:) 
-
-    real(dp), allocatable :: q_star_cartesian(:,:), rotated_tau(:,:)
-    real(dp) :: vec(3), rotation(3,3), inv_rotation(3,3), translation(3), arg, &
-         a1(3), a2(3), a3(3)         
-    integer, allocatable :: kappa_to_k(:)
-    integer :: kappa, k, ix, iy, iz, i_cart, j_cart, i_eigenmode
-    complex(dp) :: phase
-!    real(dp), allocatable :: freq(:)
-!    complex(dp), allocatable :: eigvec(:,:)
-    complex(dp), allocatable :: ph_eigenvector(:,:,:), ph_star_eigenvector(:,:,:,:)
-    
+    ! Note: this subroutine is called n_q^irr times
+    ! i.e. the number of irreducible q-points used during the phonon run
     
     if ( .not. ionode ) return
 
     if ( first ) then
 
-      !----------------------------------------------
+      !-------------------------------------------------
       ! the first time this is subroutine called,
       ! we do some sanity checks that the calculation has been setup as we want
-      ! we also check for the symmetries of the k/q meshes
+      ! we also load the symmetries of the k/q meshes
       
       first = .false.
       nk = nk1 * nk2 * nk3
@@ -1451,11 +1448,8 @@ END SUBROUTINE elphsum_simple
       do i = 1,nk
         q_phonon = qgrid_full(:,i)
         CALL cryst_to_cart(1, q_phonon, at, -1)
-        ! print*, i, q_equiv(i), q_phonon
         isym = q_equiv_symmetry(i)
-        ! print*, fractional_translation(:,isym)
       end do
-      ! stop
       
       nq_irr = 0
       do i = 1,nq
@@ -1508,8 +1502,9 @@ END SUBROUTINE elphsum_simple
             
     end if
 
-    !------------------------------------------------
-    ! In the first iteration, we write more info to file (meshes, crystal info, etc)
+    !----------------------------------------------------------------------------
+    ! In the first iteration, we write to file some general info
+    ! (like k/q meshes, crystal, ...)
     
     if ( iq == 1 ) then
 
@@ -1562,7 +1557,8 @@ END SUBROUTINE elphsum_simple
     end if
     !
     !----------------------------------------------------------------------------
-    ! Here we use g(Sk,q) = g(k,S^{-1}q) to unfold the coupling
+    ! Here we reconstruct the "star" of q-points equivalent
+    ! to the current irreducible point under consideration
     !
     q_phonon = x_q(:,iq)    
     CALL cryst_to_cart(1, q_phonon, at, -1)
@@ -1597,6 +1593,43 @@ END SUBROUTINE elphsum_simple
         q_star(:,j) = qgrid_full(:,iqq)
       end if
     end do
+
+    !-------------------------------------------------------------------
+    ! We miss a couple of things to the el_ph_mat matrix
+    ! 1) the perturbation is computed in the pattern basis
+    !    we need to multiply by "u" to go in cartesian coordinates
+    !    After this rotation, the 4th index represents an index
+    !    over 3 cartesian coordinates and nat atoms
+    ! 2) we need a further rotation to the phonon eigenvector basis
+    !    so, we multiply the results by the phonon eigenvector matrix dyn.
+    !    Note, I verified that dyn contains eigenvectors scaled by /sqrt(mass)
+    !    and that has dimension dyn(3*nat,nPhModes)
+
+    ! el_ph_mat_collect(nbnd, nbnd, nksqtot, nmodes)
+    ! the el=ph coupling was computed in the pattern representation
+    ! Now I want to rotate it to cartesian coordinates
+    allocate(tmp_el_ph_mat(nbnd, nbnd, nksqtot, nmodes))
+    tmp_el_ph_mat = cmplx(0.,0.,kind=dp)
+    do i_pattern = 1,nmodes
+      do i_mode = 1,nmodes
+        tmp_el_ph_mat(:,:,:,i_mode) = tmp_el_ph_mat(:,:,:,i_mode) + &
+             conjg(u(i_mode,i_pattern)) * el_ph_mat_collect(:,:,:,i_pattern)
+      end do
+    end do
+    allocate(el_ph_mat_cartesian(nbnd, nbnd, nksqtot, nmodes))
+    el_ph_mat_cartesian = cmplx(0.,0.,kind=dp)
+    do i_pattern = 1,nmodes
+      do i_mode = 1,nmodes
+        el_ph_mat_cartesian(:,:,:,i_mode) = el_ph_mat_cartesian(:,:,:,i_mode) + &
+             conjg(dyn(i_pattern,i_mode)) * tmp_el_ph_mat(:,:,:,i_pattern)
+      end do
+    end do
+    deallocate(tmp_el_ph_mat)
+    
+    !----------------------------------------------------------------------------
+    ! Here we start the coupling unfolding
+    ! we use g(Sk,q) = g(k,S^{-1}q) to unfold the coupling
+    ! which is equivalent to g(Sk,Sq) = g(k,q)
     
     allocate(gq_coupling(nbnd, nbnd, nk, nmodes, n_star))
     gq_coupling = cmplx(0., 0., kind=dp)
@@ -1636,7 +1669,7 @@ END SUBROUTINE elphsum_simple
           end do
           if ( iq_star == 0 ) call errore("phoebe", "q not found in star",1)
           
-          gq_coupling(:,:,ik_rotated,:,iq_star) = el_ph_mat_collect(:,:,iksq,:)
+          gq_coupling(:,:,ik_rotated,:,iq_star) = el_ph_mat_cartesian(:,:,iksq,:)
         end if
         !
         if ( time_reversal ) then
@@ -1660,14 +1693,14 @@ END SUBROUTINE elphsum_simple
             if ( iq_star == 0 ) call errore("phoebe", "q not found in star",1)
             
             gq_coupling(:, :, ik_rotated, :, iq_star) = &
-                 el_ph_mat_collect(:, :, iksq, :)
+                 el_ph_mat_cartesian(:, :, iksq, :)
           end if
         end if
         !
       end do ! end nsym
     end do
 
-    !------------ Rotate the phonon eigenvectors ------------------
+    !------------ Rotate the phonon eigenvectors -------------------------------
     ! I must do this, so that we can keep their phase information,
     ! needed to Fourier transform them to real space
     ! Eq. 2.33, Maradudin & Vosko, Rev. Mod. Phys. (1968)
@@ -1805,7 +1838,7 @@ END SUBROUTINE elphsum_simple
       do jj = 1,nmodes
         do k = 1,nat
           do i_cart = 1,3
-            write(unit_phoebe,"(2ES24.16)") ph_star_eigenvector(i_cart, k, jj, iqq)
+            write(unit_phoebe,"(2ES24.16)") ph_star_eigenvector(i_cart,k,jj,iqq)
           end do
         end do
       end do
@@ -1815,10 +1848,8 @@ END SUBROUTINE elphsum_simple
          ii=1,nbnd), jj=1,nbnd), kk=1,nk), ll=1,nmodes), iqq=1,n_star)
     close(unit_phoebe)
     
-    deallocate(gq_coupling)
-
-    deallocate(q_star_cartesian)
-    deallocate(ph_star_eigenvector, ph_eigenvector)
+    deallocate(gq_coupling, q_star_cartesian, ph_star_eigenvector)
+    deallocate(ph_eigenvector, el_ph_mat_cartesian)
     
     return
   end subroutine elphfil_phoebe
