@@ -187,9 +187,6 @@ SUBROUTINE elphon()
               dyn (mu, nu) = dyn (mu, nu) / SQRT ( amu_ry * amass (ityp (na) ) )
            ENDDO
         ENDDO
-
-        print*, "Entered here"
-        print*, dyn(1,:)
         
         CALL read_dyn_mat_tail(nat)
   
