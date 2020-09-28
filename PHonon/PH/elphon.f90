@@ -1401,7 +1401,7 @@ END SUBROUTINE elphsum_simple
          a1(3), a2(3), a3(3), k_rotated(3), q_rotated(3), q_phonon(3), &
          k_phonon(3), qdiff(3)
     real(dp), allocatable :: q_star(:,:), energies_unfolded(:,:), &
-         q_star_cartesian(:,:), rotated_tau(:,:)
+         q_star_cartesian(:,:), rotated_tau(:,:), ph_frequencies(:)
     complex(dp) :: phase
     complex(dp), allocatable :: gq_coupling(:,:,:,:,:), ph_eigenvector(:,:,:), &
          ph_star_eigenvector(:,:,:,:), tmp_el_ph_mat(:,:,:,:), &
@@ -1494,7 +1494,7 @@ END SUBROUTINE elphsum_simple
 
       file_xml = trim(tmp_dir) // "../" // trim(prefix) // ".phoebe.scf.0000.dat"
       ios = 0
-      open(unit = unit_phoebe, file = TRIM(file_xml), status = 'old', iostat = ios)
+      open(unit=unit_phoebe, file = TRIM(file_xml), status = 'old', iostat = ios)
       if ( ios /= 0 ) then
         call errore("phoebe", &
              "you must use the patch on pw.x calculation ahead of running ph.x", 1)
@@ -1549,7 +1549,7 @@ END SUBROUTINE elphsum_simple
       do jj = 1,nk
         write(unit_phoebe,*) (kgrid_full(ii, jj), ii = 1, 3)
       end do
-      ! write energies at all k points
+      ! write KS energies at all k points
       do jj = 1,nk
         write(unit_phoebe,*) (energies_unfolded(ii, jj), ii = 1, nbnd)
       end do
@@ -1817,6 +1817,16 @@ END SUBROUTINE elphsum_simple
       deallocate(rotated_tau)
     end if
 
+    ! ph frequencies
+    allocate(ph_frequencies(3*nat))
+    do ii = 1,nmodes
+      if ( w2(ii) >= 0.d0 ) then
+        ph_frequencies(ii) = sqrt(w2(ii))
+      else
+        ph_frequencies(ii) = - sqrt(-w2(ii))
+      end if
+    end do
+
     !---------------------------------------------
     !---------- Dump results to file -------------
     !---------------------------------------------
@@ -1833,7 +1843,7 @@ END SUBROUTINE elphsum_simple
     do iqq = 1,n_star
       write(unit_phoebe,*) (q_star_cartesian(ii,iqq), ii = 1,3)
     end do
-    write(unit_phoebe,*) (w2(ii), ii = 1,nmodes) ! ph energies
+    write(unit_phoebe,*) (ph_frequencies(ii), ii = 1,nmodes) ! in rydbergs
     do iqq = 1,n_star
       do jj = 1,nmodes
         do k = 1,nat
@@ -1849,7 +1859,7 @@ END SUBROUTINE elphsum_simple
     close(unit_phoebe)
     
     deallocate(gq_coupling, q_star_cartesian, ph_star_eigenvector)
-    deallocate(ph_eigenvector, el_ph_mat_cartesian)
+    deallocate(ph_eigenvector, el_ph_mat_cartesian, ph_frequencies)
     
     return
   end subroutine elphfil_phoebe
