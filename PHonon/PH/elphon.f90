@@ -1346,11 +1346,42 @@ SUBROUTINE elphsum_simple
      
 
 END SUBROUTINE elphsum_simple
+
+
+
+subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
+  use kinds, only: dp
+    implicit none
+    real(dp), intent(in) :: q_reference_crystal(3), q_point_crystal(3)
+    logical, intent(out) :: is_in_grid
+    integer :: i, j, k
+    real(dp) :: diff, transl(3)
+    
+    is_in_grid = .false.
+
+    do i = -2,2
+      do j = -2,2
+        do k = -2,2
+          transl(1) = q_point_crystal(1) + dble(i)
+          transl(2) = q_point_crystal(2) + dble(j)
+          transl(3) = q_point_crystal(3) + dble(k)
+          diff = sum((transl(:) - q_reference_crystal(:))**2)
+          if ( diff < 1.0e-6 ) then
+            is_in_grid = .true.
+            return
+          end if
+        end do
+      end do
+    end do
+    
+    return
+  end subroutine is_point_equal
   !
   !------------------------------------------------------------
   !
   subroutine elphfil_phoebe(iq, xk_collect, ikks_collect, et_collect, &
        el_ph_mat_collect)
+    USE lr_symm_base, ONLY : rtau
 
     USE constants, ONLY : ry_to_thz, ry_to_cmm1, amu_ry
     
@@ -1367,7 +1398,7 @@ END SUBROUTINE elphsum_simple
     USE wvfct, ONLY : nbnd
     USE klist, ONLY : nelec
     USE qpoint, ONLY : nksqtot
-    USE symm_base, ONLY : s, sr, nsym, t_rev, irt, time_reversal, ft
+    USE symm_base, ONLY : s, sr, nsym, t_rev, irt, time_reversal, ft, invs
     ! ft: FractionalTranslations(3,48) in crystal coords
     USE modes, ONLY : nmodes, u
     USE dynmat, ONLY : dyn, w2
@@ -1393,21 +1424,29 @@ END SUBROUTINE elphsum_simple
          isym, iq_star, iq_full, iksq, i, j, n_star, unit_phoebe, &
          ii, jj, ios, kk, ll, kappa, k, ix, iy, iz, i_cart, j_cart, &
          i_eigenmode, i_pattern, i_mode
-    integer, allocatable :: kappa_to_k(:)
+    integer, allocatable :: kappa_to_k(:), list_of_isym(:)
     real(dp) :: vec(3), rotation(3,3), inv_rotation(3,3), translation(3), arg, &
-         a1(3), a2(3), a3(3), k_rotated(3), q_rotated(3), q_phonon(3), &
-         k_phonon(3), qdiff(3)
-    real(dp), allocatable :: q_star(:,:), energies_unfolded(:,:), &
-         q_star_cartesian(:,:), rotated_tau(:,:), ph_frequencies(:)
+         a1(3), a2(3), a3(3), k_rotated(3), q_rotated(3),  &
+         k_phonon_crystal(3), qdiff(3), q_phonon_crystal(3), q_phonon_cartesian(3), &
+         q_star_cartesian(3,48), q_star_crystal(3,48)
+    real(dp), allocatable :: energies_unfolded(:,:), &
+         rotated_tau(:,:), ph_frequencies(:)
     complex(dp) :: phase
     complex(dp), allocatable :: gq_coupling(:,:,:,:,:), ph_eigenvector(:,:,:), &
          ph_star_eigenvector(:,:,:,:), tmp_el_ph_mat(:,:,:,:), &
-         el_ph_mat_cartesian(:,:,:,:)
+         el_ph_mat_cartesian(:,:,:,:), gamma_matrix(:,:,:,:)
     character(len=4) :: iq_char
     character(len=200) :: file_phoebe, file_xml, line
     logical :: q_in_the_list, k_in_the_list, found
     integer, external :: find_free_unit
 
+    real(dp), allocatable :: test_freq(:)
+    complex(dp), allocatable :: test_vec(:,:), Dq(:,:), tmp(:,:), eigvec(:,:)
+    integer :: na, sna, isq(48), ism1, imq, i1, i2, nb, ipol, i3, kp, my_isym, &
+         my_kBig_to_k(48,nat), kbig
+    real(dp) :: tau_crystal(3,nat), rtau_mine(3,48,nat), translations(3,48), vec2(3), &
+         my_S(3,3,48), my_xm(3,48,nat), my_v(3,48)
+    
     ! Note: this subroutine is called n_q^irr times
     ! i.e. the number of irreducible q-points used during the phonon run
     
@@ -1441,12 +1480,6 @@ END SUBROUTINE elphsum_simple
            k_equiv, wk, k_equiv_symmetry)
       call find_irreducible_grid(nq1, nq2, nq3, 0, 0, 0, qgrid_full, &
            q_equiv, wq, q_equiv_symmetry)
-
-      do i = 1,nk
-        q_phonon = qgrid_full(:,i)
-        CALL cryst_to_cart(1, q_phonon, at, -1)
-        isym = q_equiv_symmetry(i)
-      end do
       
       nq_irr = 0
       do i = 1,nq
@@ -1509,9 +1542,9 @@ END SUBROUTINE elphsum_simple
       allocate(energies_unfolded(nbnd,nk))
       energies_unfolded = 0.
       do i = 1,nkstot
-        k_phonon = xk_collect(:,i) ! wavevector used in the phonon code
-        CALL cryst_to_cart(1, k_phonon, at, -1) ! fold to crystal coords
-        call get_point_index(iq_full, k_phonon, nk1, nk2, nk3, k1, k2, k3,&
+        k_phonon_crystal = xk_collect(:,i) ! wavevector used in the phonon code
+        CALL cryst_to_cart(1, k_phonon_crystal, at, -1) ! fold to crystal coords
+        call get_point_index(iq_full, k_phonon_crystal, nk1, nk2, nk3, k1, k2, k3,&
              .false.)
         ! iq_full is the index of the vector in xk_collect inside my list
         do j = 1,nk
@@ -1552,45 +1585,59 @@ END SUBROUTINE elphsum_simple
       end do
       close(unit_phoebe)
     end if
-    !
+
+    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    ! Get the coordinates of the q_phonon point
+
+    ! coordinates of the point explicitly computed
+    q_phonon_cartesian = x_q(:,iq)
+    q_phonon_crystal = x_q(:,iq)
+    CALL cryst_to_cart(1, q_phonon_crystal, at, -1)
+
+    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    ! Reconstructs the current star of qpoints
+    ! 
+    call star_q1(q_phonon_cartesian, at, bg, nsym, s, invs, n_star, q_star_cartesian, &
+         isq, imq, .TRUE., t_rev)
+    ! convert q_star to crystal coords.
+    q_star_crystal = q_star_cartesian
+    do i = 1,n_star
+      call cryst_to_cart(1, q_star_crystal(:,i), at, -1)
+    end do
+
     !----------------------------------------------------------------------------
-    ! Here we reconstruct the "star" of q-points equivalent
-    ! to the current irreducible point under consideration
-    !
-    q_phonon = x_q(:,iq)    
-    CALL cryst_to_cart(1, q_phonon, at, -1)
-    
+    ! Find index of the irreducible qpoint in the list of points for Phoebe
     ! iq_full is the index of q (from ph.x) in my grid of q points
-    call get_point_index(iq_full, q_phonon, nq1, nq2, nq3, 0, 0, 0, .false.)
-    
-    ! check q point in grid
-    if ( q_equiv(iq_full) /= iq_full ) then
-      call errore("phoebe", "qpoint not ordered as expected 1", 1)
-    end if
-
-    qdiff(:) = q_phonon(:) -  qgrid_full(:,iq_full)
+    call get_point_index(iq_full, q_phonon_crystal, nq1, nq2, nq3, 0, 0, 0, .false.)
+    ! verify that the point was found
+    qdiff(:) = q_phonon_crystal(:) - qgrid_full(:,iq_full)
     qdiff = qdiff - nint(qdiff)
-
     if ( sum(qdiff**2) > 1.0d-5 ) then
       call errore("phoebe", "qpoint grid not ordered as expected 2", 1)
     end if
-    
-    ! number of equivalent q points in this star
-    n_star = 0
-    do iqq = 1,nq
-      if ( q_equiv(iqq) == iq_full ) then
-        n_star = n_star + 1
-      end if
-    end do
-    allocate(q_star(3,n_star))
-    j = 0
-    do iqq = 1,nq
-      if ( q_equiv(iqq) == iq_full ) then
-        j = j + 1
-        q_star(:,j) = qgrid_full(:,iqq)
-      end if
-    end do
 
+    allocate(list_of_isym(n_star))
+    list_of_isym = 0
+    do j = 1,n_star
+      do isym = 1,nsym
+        if ( isq(isym)==j ) then
+          list_of_isym(j) = isym
+        end if
+      end do
+    end do
+    list_of_isym(1) = 1 ! we overwrite the first sym, which should be identity
+    ! And I don't know what it's equal to otherwise
+
+    ! Here we check that the symmetries of the star are correct
+    do i = 1,n_star
+      isym = list_of_isym(i)
+      q_rotated = matmul(s(:,:,isym), q_star_crystal(:,i))
+      call is_point_equal(q_in_the_list, q_star_crystal(:,1), q_rotated)
+      if ( .not. q_in_the_list ) then
+        call errore("phoebe", "Star symms problem", 1)
+      end if
+    end do
+    
     !-------------------------------------------------------------------
     ! We miss a couple of things to the el_ph_mat matrix
     ! 1) the perturbation is computed in the pattern basis
@@ -1622,7 +1669,7 @@ END SUBROUTINE elphsum_simple
       end do
     end do
     deallocate(tmp_el_ph_mat)
-    
+
     !----------------------------------------------------------------------------
     ! Here we start the coupling unfolding
     ! we use g(Sk,q) = g(k,S^{-1}q) to unfold the coupling
@@ -1632,66 +1679,34 @@ END SUBROUTINE elphsum_simple
     gq_coupling = cmplx(0., 0., kind=dp)
 
     ! here we actually apply g(Sk,Sq^irr) = g(k,q^irr)
-    
-    do iksq = 1,nksqtot ! loop over the k's computed by phonon.x
-      ! (xk_collect(3, nkstot) k point coordinates
-      ! ikks_collect(nksqtot) ! indeces of k vectors in the loop nksqtot
-      ik_phonon = ikks_collect(iksq) ! index of k in xk_collect list
-      k_phonon = xk_collect(:,ik_phonon) ! k wavevector in cartesian coordinates
-      CALL cryst_to_cart(1, k_phonon, at, -1) ! in crystal coords
+
+    do iq_star = 1,n_star
+      isym = list_of_isym(iq_star) ! index of symmetry that maps q to q*
       !
-      do isym = 1,nsym
-        k_rotated = matmul(s(:,:,isym), k_phonon)
-        q_rotated = matmul(s(:,:,isym), q_phonon) ! q_phonon is the irred q-point
+      do iksq = 1,nksqtot ! loop over the k's computed by phonon.x
+        ! (xk_collect(3, nkstot) k point coordinates
+        ! ikks_collect(nksqtot) ! indeces of k vectors in the loop nksqtot
+        ik_phonon = ikks_collect(iksq) ! index of k in xk_collect list
+        k_phonon_crystal = xk_collect(:,ik_phonon) ! k wavevector in cartesian coordinates
+        CALL cryst_to_cart(1, k_phonon_crystal, at, -1) ! in crystal coords
+        !
+        k_rotated = matmul(s(:,:,isym), k_phonon_crystal)
+        q_rotated = matmul(s(:,:,isym), q_phonon_crystal) ! q_phonon is the irred q-point
         k_rotated(:) = k_rotated(:) - nint( k_rotated(:) )
         q_rotated(:) = q_rotated(:) - nint( q_rotated(:) )
-        if ( t_rev(isym) == 1 ) then
-          k_rotated = - k_rotated
-          q_rotated = - q_rotated
-        end if
+        !
         call is_point_in_grid(k_in_the_list, k_rotated, nk1, nk2, nk3, 0, 0, 0, .false.)
         call is_point_in_grid(q_in_the_list, q_rotated, nq1, nq2, nq3, 0, 0, 0, .false.)
         !
-        if ( k_in_the_list .and. q_in_the_list ) then
-          ! index of point in the full grid
-          call get_point_index(ik_rotated, k_rotated, nk1, nk2, nk3, 0, 0, 0, .false.)
-          call get_point_index(iq_rotated, q_rotated, nq1, nq2, nq3, 0, 0, 0, .false.)
-          
-          iq_star = 0
-          do iqq = 1,n_star
-            if ( sum((qgrid_full(:,iq_rotated)-q_star(:,iqq))**2) < 1.0d-5 ) then
-              iq_star = iqq
-              exit
-            end if
-          end do
-          if ( iq_star == 0 ) call errore("phoebe", "q not found in star",1)
-          
-          gq_coupling(:,:,ik_rotated,:,iq_star) = el_ph_mat_cartesian(:,:,iksq,:)
+        if ( .not. q_in_the_list ) then
+          call errore("phoebe", "unexpected q rotation")
         end if
         !
-        if ( time_reversal ) then
-          call is_point_in_grid(k_in_the_list, k_rotated, nk1, nk2, nk3, &
-               k1, k2, k3, .true.)
-          call is_point_in_grid(q_in_the_list, q_rotated, nq1, nq2, nq3, &
-               0, 0, 0, .true.)
-          IF ( k_in_the_list .and. q_in_the_list ) THEN
-            call get_point_index(ik_rotated, k_rotated, nk1, nk2, nk3, &
-                 k1, k2, k3, .true.)
-            call get_point_index(iq_rotated, q_rotated, nq1, nq2, nq3, &
-                 0, 0, 0, .true.)
-            
-            iq_star = 0
-            do iqq = 1,n_star
-              if (sum((qgrid_full(:,iq_rotated)-q_star(:,iqq))**2) < 1.0d-5) then
-                iq_star = iqq
-                exit
-              end if
-            end do
-            if ( iq_star == 0 ) call errore("phoebe", "q not found in star",1)
-            
-            gq_coupling(:, :, ik_rotated, :, iq_star) = &
-                 el_ph_mat_cartesian(:, :, iksq, :)
-          end if
+        if ( k_in_the_list ) then
+          ! index of point in the full grid
+          call get_point_index(ik_rotated, k_rotated, nk1, nk2, nk3, 0, 0, 0, .false.)
+          call get_point_index(iq_rotated, q_rotated, nq1, nq2, nq3, 0, 0, 0, .false.)          
+          gq_coupling(:,:,ik_rotated,:,iq_star) = el_ph_mat_cartesian(:,:,iksq,:)
         end if
         !
       end do ! end nsym
@@ -1700,120 +1715,145 @@ END SUBROUTINE elphsum_simple
     !------------ Rotate the phonon eigenvectors -------------------------------
     ! I must do this, so that we can keep their phase information,
     ! needed to Fourier transform them to real space
-    ! Eq. 2.33, Maradudin & Vosko, Rev. Mod. Phys. (1968)
+    ! Eq. 2.31 or 2.33 from Maradudin & Vosko, Rev. Mod. Phys. (1968)
     ! https://journals.aps.org/rmp/abstract/10.1103/RevModPhys.40.1
 
-    ! Note: a1 is in alat units, cartesian cords
-    ! tau is in alat units, cartesian coords
-    
-    allocate(q_star_cartesian(3,n_star))
-    q_star_cartesian = q_star
-    do iq_star = 1,n_star
-      call cryst_to_cart(1, q_star_cartesian(:,iq_star), bg, 1)
-    end do
-    
-    a1 = at(:,1)
-    a2 = at(:,2)
-    a3 = at(:,3)
+    if ( imq == 0 ) then
+      call errore("phoebe", "debug imq=0",1)
+    end if
+    ! Note that the first point in the star list is the point being computed
 
-    ! Note: I checked that dyn contains the eigenvectors
-    ! normalized by sqrt of atomic mass
-    ! to verify that, run:
-    ! allocate(eigvec(3*nat,3*nat))
-    ! eigvec = dyn * sqrt(amass(1) * amu_ry)
-    ! dyn = cmplx(0.,0.,kind=dp)
-    ! do ii = 1,3*nat
-    !   dyn(ii,ii) = sqrt(w2(ii))
-    ! end do
-    ! dyn = matmul(eigvec, dyn)
-    ! dyn = matmul(dyn,transpose(eigvec))
-    ! allocate(freq(3*nat))
-    ! CALL cdiagh (3*nat, dyn, 3*nat, freq, eigvec)
-    ! print*, freq*ry_to_cmm1
-    ! print*, w2*ry_to_cmm1
-    ! print*, eigvec(:,1) ! this gives the same pattern of *.dyn* files
-    ! deallocate(eigvec)
-
-    allocate(ph_eigenvector(3,nat,3*nat))
-    ph_eigenvector = cmplx(0.,0.,kind=dp)
-    do k = 1,nat
-      do i_cart = 1,3
-        ii = 3 * (k-1) + i_cart
-        do jj = 1,3*nat
-          ph_eigenvector(i_cart,k,jj) = dyn(ii,jj)
-        end do
-      end do
-    end do
-    allocate(ph_star_eigenvector(3,nat,3*nat,n_star))
-    ph_star_eigenvector = cmplx(0.,0.,kind=dp)
-    ph_star_eigenvector(:,:,:,1) = ph_eigenvector
-    
-    !--------------------------------------------
-    
-    if ( n_star > 1 ) then ! if not, nothing to rotate
-      allocate(kappa_to_k(nat))
-      allocate(rotated_tau(3,nat))
-      do iq_star = 2,n_star
-        ! step 1: identify the symmetry S such that q^rotated = S q^irreducible
-
-        ! iqq is the index of iq_star in the full grid
-        call get_point_index(iqq, q_star(:,iq_star), nq1, nq2, nq3, 0, 0, 0, .false.)
-        ! conveniently, I computed already what is the symmetry to use here
-        isym = q_equiv_symmetry(iqq)        
-        rotation = sr(:,:,isym)
-        inv_rotation = transpose(rotation)
-        translation(:) = ft(:,isym)
-        ! transform in cartesian coordinates
-        call cryst_to_cart(1,translation(:),at,+1)
-
-        ! step 2: build the mapping kappa_to_k
-        kappa_to_k = 0
-        do kappa = 1,nat
-          ! note how the translation must be applied before the rotation
-          rotated_tau(:,kappa) = matmul(rotation,tau(:,kappa) + translation)
-          k = 0
-          do ii = 1,nat
-            do ix = -3,3
-              do iy = -3,3
-                do iz = -3,3
-                  vec(:) = rotated_tau(:,kappa) &
-                       + ix * a1(:) + iy * a2(:) + iz * a3(:)
-                  if ( sum( ( vec - tau(:,ii))**2 ) < 1.0e-5 ) then
-                    k = ii
+    if ( .false. ) then
+      ! Testing Eq. 2.4 from Maradudin and Vosko
+      ! this helps understand the various terms in QE
+      do isym = 1,nsym
+        do na = 1,nat
+          vec = matmul(sr(:,:,isym),tau(:,na)) - matmul(at,ft(:,isym))
+          do i1 = -2,2
+            do i2 = -2,2
+              do i3 = -2,2
+                vec2(1) = dble(i1)
+                vec2(2) = dble(i2)
+                vec2(3) = dble(i3)
+                vec2 = vec + matmul(at,vec2)
+                do nb = 1,nat
+                  if ( sum((vec2-tau(:,nb))**2) < 1.0e-6 ) then
+                    my_xm(:,isym,na) = matmul(at,vec2-vec)
+                    my_kBig_to_k(isym,na) = nb ! I need the inverse mapping
+                    vec = vec2
                   end if
                 end do
               end do
             end do
           end do
-          if ( k == 0 ) then
-            call errore("phoebe", "tau not folded", 1)
+          if ( sum((vec-tau(:,irt(isym,na)))**2) > 1.0e-6 ) then
+            call errore("phoebe", "atom mapping failed", 1)
           end if
-          kappa_to_k(kappa) = k
         end do
+        my_S(:,:,isym) = sr(:,:,isym)
+        my_v(:,isym) = - matmul(at,ft(:,isym))
+      end do
+    end if
+    
+    
+    allocate(ph_star_eigenvector(3, nat, 3*nat, n_star))
+    ph_star_eigenvector = cmplx(0.,0.,kind=dp)
+    !
+    ! Here apply Eq. 2.31 from Maradudin & Vosko, RMP (1968)
+    !
+    do iq_star = 1,n_star
+      isym = list_of_isym(iq_star)
+      
+      ! Note: isym is the index of the symmetry that brings
+      ! S*q^star = q^irr
+      
+      do kBig = 1,nat
+        k = my_kBig_to_k(my_isym,kBig)
+
+        ! This replicates QE
+        ! In detail: I checked below that the dynamicam matrix is the same
+        ! of what is printed in the {prefix}.dyn* files
+        ! However, it doesn't seem to match the equation 2.34. Boh
+        vec = matmul(sr(:,:,isym), tau(:,k)) - tau(:,kBig)
+        arg = tpi * sum(q_star_cartesian(:,iq_star)*vec)
+        phase = cmplx(cos(arg),-sin(arg),kind=dp)
         
-        ! step 3: rotation
-        
-        do kappa = 1,nat
-          k = kappa_to_k(kappa)
-          vec(:) = matmul(inv_rotation,tau(:,kappa)-translation) - tau(:,k)
-          arg = tpi * sum( q_star_cartesian(:,1) * vec(:) )
-          phase = cmplx(cos(arg),sin(arg),kind=dp)          
-          do i_eigenmode = 1,nmodes
-            do i_cart = 1,3
-              do j_cart = 1,3
-                jj = 3 * (kappa-1) + j_cart
-                ph_star_eigenvector(i_cart,k,i_eigenmode,iq_star) =        &
-                     ph_star_eigenvector(i_cart,k,i_eigenmode,iq_star)     &
-                     + rotation(i_cart,j_cart) * phase * dyn(jj,i_eigenmode)
-              end do
-            end do
+        ! This was correct for several qpoints
+        ! but sometimes, for k /= kBig, there was a phase shift by Pi
+        ! vec = matmul(transpose(my_S(:,:,isym)), tau(:,kBig)) - tau(:,k)
+        ! arg = tpi * sum(q_star_cartesian(:,iq_star)*vec)
+        ! phase = cmplx(cos(arg),sin(arg),kind=dp)
+
+        ! This seemed to me to be the equation of Maradudin & Vosko,
+        ! bug only gives correct results for k = kBig
+        ! vec = matmul(transpose(my_S(:,:,isym)), tau(:,kBig) - my_v(:,isym) &
+        !      - my_xm(:,isym,kBig)) - tau(:,k)
+        ! arg = tpi * sum(q_star_cartesian(:,iq_star)*vec)
+        ! phase = cmplx(cos(arg),sin(arg),kind=dp)
+
+        do i_cart = 1,3
+          do j_cart = 1,3
+            jj = 3 * (k-1) + j_cart
+            ph_star_eigenvector(i_cart,kBig,:,iq_star) =        &
+                 ph_star_eigenvector(i_cart,kBig,:,iq_star)     &
+                 + phase * my_s(i_cart,j_cart,isym) * dyn(jj,:)
           end do
         end do
       end do
-      deallocate(kappa_to_k)
-      deallocate(rotated_tau)
-    end if
+      !
+    end do
 
+
+    if ( .true. ) then
+      ! In this test, I build the dynamical matrixes
+      ! which can be compared with the ones in silicon.dyn* files
+    
+      allocate(Dq(nmodes,nmodes))
+      allocate(test_vec(nmodes,nmodes))    
+      do iq_star = 1,n_star
+        Dq = cmplx(0.,0.,kind=dp)
+        do ii = 1,nmodes
+          Dq(ii,ii) = w2(ii)
+        end do
+        !
+        test_vec = cmplx(0.,0.,kind=dp)
+        do i1 = 1,nat
+          do i_cart = 1,3
+            ii = 3 * (i1-1) + i_cart
+            test_vec(ii,:) = ph_star_eigenvector(i_cart,i1,:,iq_star)
+          end do
+        end do
+        Dq = matmul(test_vec,Dq)
+        Dq = matmul(Dq,conjg(transpose(test_vec))) * (amass(1)*amu_ry)**2
+        ! Note: assuming mono-species for test!
+        !
+        isym = list_of_isym(iq_star)
+        !
+        print*, q_star_cartesian(:,iq_star)
+        print*, matmul(my_s(:,:,isym),q_star_cartesian(:,1))
+        print*, isym, ft(:,isym)
+        !      
+        do i1 = 1,nat
+          do i2 = 1,nat
+            print*, i1, i2
+            do ii = 1,3
+              write(*,"(6F12.8)") (Dq(3*(i1-1)+ii,3*(i2-1)+jj), jj = 1,3)
+            end do
+          end do
+        end do
+        !
+        print*, ""
+        print*, "---------------"
+        print*, ""
+        !
+      end do
+      deallocate(Dq, test_vec)
+    end if
+    
+
+    if ( iq == 2 ) stop
+
+    
     ! ph frequencies
     allocate(ph_frequencies(3*nat))
     do ii = 1,nmodes
@@ -1835,7 +1875,7 @@ END SUBROUTINE elphsum_simple
          access = 'sequential', status = 'replace', iostat = ios)
     write(unit_phoebe,*) n_star
     do iqq = 1,n_star
-      write(unit_phoebe,*) (q_star(ii,iqq), ii = 1,3) ! crystal coords
+      write(unit_phoebe,*) (q_star_crystal(ii,iqq), ii = 1,3) ! crystal coords
     end do
     do iqq = 1,n_star
       write(unit_phoebe,*) (q_star_cartesian(ii,iqq), ii = 1,3)
@@ -1855,9 +1895,10 @@ END SUBROUTINE elphsum_simple
          ii=1,nbnd), jj=1,nbnd), kk=1,nk), ll=1,nmodes), iqq=1,n_star)
     close(unit_phoebe)
     
-    deallocate(gq_coupling, q_star_cartesian, ph_star_eigenvector)
-    deallocate(ph_eigenvector, el_ph_mat_cartesian, ph_frequencies)
-    
+    deallocate(gq_coupling, ph_star_eigenvector)
+    deallocate(el_ph_mat_cartesian, ph_frequencies)
+    deallocate(list_of_isym)
+
     return
   end subroutine elphfil_phoebe
   !
