@@ -1381,10 +1381,7 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
   !
   subroutine elphfil_phoebe(iq, xk_collect, ikks_collect, et_collect, &
        el_ph_mat_collect)
-    USE lr_symm_base, ONLY : rtau
-
-    USE constants, ONLY : ry_to_thz, ry_to_cmm1, amu_ry
-    
+    USE constants, ONLY : ry_to_thz, ry_to_cmm1, amu_ry    
     use constants, only: tpi
     use io_files, only: tmp_dir, prefix
     USE cell_base, ONLY : alat, at, bg
@@ -1420,32 +1417,23 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
     integer, save :: nk, nq, nq_irr
     real(dp), allocatable, save :: kgrid_full(:,:), qgrid_full(:,:)
     !
-    integer :: iqq, iq_phonon, ik_phonon, iq_rotated, ik_rotated, &
+    integer :: iqq, ik_phonon, iq_rotated, ik_rotated, &
          isym, iq_star, iq_full, iksq, i, j, n_star, unit_phoebe, &
-         ii, jj, ios, kk, ll, kappa, k, ix, iy, iz, i_cart, j_cart, &
-         i_eigenmode, i_pattern, i_mode
-    integer, allocatable :: kappa_to_k(:), list_of_isym(:)
-    real(dp) :: vec(3), rotation(3,3), inv_rotation(3,3), translation(3), arg, &
-         a1(3), a2(3), a3(3), k_rotated(3), q_rotated(3),  &
-         k_phonon_crystal(3), qdiff(3), q_phonon_crystal(3), q_phonon_cartesian(3), &
-         q_star_cartesian(3,48), q_star_crystal(3,48)
-    real(dp), allocatable :: energies_unfolded(:,:), &
-         rotated_tau(:,:), ph_frequencies(:)
-    complex(dp) :: phase
-    complex(dp), allocatable :: gq_coupling(:,:,:,:,:), ph_eigenvector(:,:,:), &
-         ph_star_eigenvector(:,:,:,:), tmp_el_ph_mat(:,:,:,:), &
-         el_ph_mat_cartesian(:,:,:,:), gamma_matrix(:,:,:,:)
-    character(len=4) :: iq_char
-    character(len=200) :: file_phoebe, file_xml, line
-    logical :: q_in_the_list, k_in_the_list, found
+         ii, jj, ios, kk, ll, k, i_cart, j_cart, my_kBig_to_k(48,nat), kbig, &
+         i_pattern, i_mode, na, isq(48), imq, i1, i2, nb, i3         
+    integer, allocatable :: list_of_isym(:)
     integer, external :: find_free_unit
-
-    real(dp), allocatable :: test_freq(:)
-    complex(dp), allocatable :: test_vec(:,:), Dq(:,:), tmp(:,:), eigvec(:,:)
-    integer :: na, sna, isq(48), ism1, imq, i1, i2, nb, ipol, i3, kp, my_isym, &
-         my_kBig_to_k(48,nat), kbig
-    real(dp) :: tau_crystal(3,nat), rtau_mine(3,48,nat), translations(3,48), vec2(3), &
-         my_S(3,3,48), my_xm(3,48,nat), my_v(3,48)
+    real(dp) :: vec(3), arg, my_S(3,3,48), my_xm(3,48,nat), my_v(3,48), vec2(3),  &
+         k_rotated(3), q_rotated(3), q_star_cartesian(3,48), q_star_crystal(3,48),&
+         k_phonon_crystal(3), qdiff(3), q_phonon_crystal(3), q_phonon_cartesian(3)         
+    real(dp), allocatable :: energies_unfolded(:,:), ph_frequencies(:)
+    complex(dp) :: phase
+    complex(dp), allocatable :: gq_coupling(:,:,:,:,:), &
+         ph_star_eigenvector(:,:,:,:), tmp_el_ph_mat(:,:,:,:), &
+         el_ph_mat_cartesian(:,:,:,:), test_vec(:,:), Dq(:,:)
+    character(len=4) :: iq_char
+    character(len=200) :: file_phoebe, file_xml
+    logical :: q_in_the_list, k_in_the_list
     
     ! Note: this subroutine is called n_q^irr times
     ! i.e. the number of irreducible q-points used during the phonon run
@@ -1524,11 +1512,13 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
 
       file_xml = trim(tmp_dir) // "../" // trim(prefix) // ".phoebe.scf.0000.dat"
       ios = 0
+      unit_phoebe = find_free_unit()
       open(unit=unit_phoebe, file = TRIM(file_xml), status = 'old', iostat = ios)
       if ( ios /= 0 ) then
         call errore("phoebe", &
              "you must use the patch on pw.x calculation ahead of running ph.x", 1)
       end if
+      close(unit_phoebe)
             
     end if
 
@@ -1722,38 +1712,36 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
       call errore("phoebe", "debug imq=0",1)
     end if
     ! Note that the first point in the star list is the point being computed
-
-    if ( .false. ) then
-      ! Testing Eq. 2.4 from Maradudin and Vosko
-      ! this helps understand the various terms in QE
-      do isym = 1,nsym
-        do na = 1,nat
-          vec = matmul(sr(:,:,isym),tau(:,na)) - matmul(at,ft(:,isym))
-          do i1 = -2,2
-            do i2 = -2,2
-              do i3 = -2,2
-                vec2(1) = dble(i1)
-                vec2(2) = dble(i2)
-                vec2(3) = dble(i3)
-                vec2 = vec + matmul(at,vec2)
-                do nb = 1,nat
-                  if ( sum((vec2-tau(:,nb))**2) < 1.0e-6 ) then
-                    my_xm(:,isym,na) = matmul(at,vec2-vec)
-                    my_kBig_to_k(isym,na) = nb ! I need the inverse mapping
-                    vec = vec2
-                  end if
-                end do
+    
+    ! Testing Eq. 2.4 from Maradudin and Vosko
+    ! this helps understand the various terms in QE
+    do isym = 1,nsym
+      do na = 1,nat
+        vec = matmul(sr(:,:,isym),tau(:,na)) - matmul(at,ft(:,isym))
+        do i1 = -2,2
+          do i2 = -2,2
+            do i3 = -2,2
+              vec2(1) = dble(i1)
+              vec2(2) = dble(i2)
+              vec2(3) = dble(i3)
+              vec2 = vec + matmul(at,vec2)
+              do nb = 1,nat
+                if ( sum((vec2-tau(:,nb))**2) < 1.0e-6 ) then
+                  my_xm(:,isym,na) = matmul(at,vec2-vec)
+                  my_kBig_to_k(isym,na) = nb ! I need the inverse mapping
+                  vec = vec2
+                end if
               end do
             end do
           end do
-          if ( sum((vec-tau(:,irt(isym,na)))**2) > 1.0e-6 ) then
-            call errore("phoebe", "atom mapping failed", 1)
-          end if
         end do
-        my_S(:,:,isym) = sr(:,:,isym)
-        my_v(:,isym) = - matmul(at,ft(:,isym))
+        if ( sum((vec-tau(:,irt(isym,na)))**2) > 1.0e-6 ) then
+          call errore("phoebe", "atom mapping failed", 1)
+        end if
       end do
-    end if
+      my_S(:,:,isym) = sr(:,:,isym)
+      my_v(:,isym) = - matmul(at,ft(:,isym))
+    end do
     
     
     allocate(ph_star_eigenvector(3, nat, 3*nat, n_star))
@@ -1768,7 +1756,7 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
       ! S*q^star = q^irr
       
       do kBig = 1,nat
-        k = my_kBig_to_k(my_isym,kBig)
+        k = my_kBig_to_k(isym,kBig)
 
         ! This replicates QE
         ! In detail: I checked below that the dynamicam matrix is the same
@@ -1804,7 +1792,7 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
     end do
 
 
-    if ( .true. ) then
+    if ( .false. ) then
       ! In this test, I build the dynamical matrixes
       ! which can be compared with the ones in silicon.dyn* files
     
@@ -1850,9 +1838,6 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
       deallocate(Dq, test_vec)
     end if
     
-
-    if ( iq == 2 ) stop
-
     
     ! ph frequencies
     allocate(ph_frequencies(3*nat))
