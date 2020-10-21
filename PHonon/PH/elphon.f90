@@ -1680,9 +1680,9 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
         k_phonon_crystal = xk_collect(:,ik_phonon) ! k wavevector in cartesian coordinates
         CALL cryst_to_cart(1, k_phonon_crystal, at, -1) ! in crystal coords
         !
-        k_rotated = matmul(s(:,:,isym), k_phonon_crystal)
+        k_rotated = matmul(s(:,:,isym), k_phonon_crystal) ! rotate point
         q_rotated = matmul(s(:,:,isym), q_phonon_crystal) ! q_phonon is the irred q-point
-        k_rotated(:) = k_rotated(:) - nint( k_rotated(:) )
+        k_rotated(:) = k_rotated(:) - nint( k_rotated(:) ) ! fold in 1st BZ 
         q_rotated(:) = q_rotated(:) - nint( q_rotated(:) )
         !
         call is_point_in_grid(k_in_the_list, k_rotated, nk1, nk2, nk3, 0, 0, 0, .false.)
@@ -1692,6 +1692,9 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
           call errore("phoebe", "unexpected q rotation")
         end if
         !
+        ! if both points rotate and stay on the grid
+        ! then we can assign values to the rotated g coupling
+        ! if they are not rotating, we have 0 el-ph coupling
         if ( k_in_the_list ) then
           ! index of point in the full grid
           call get_point_index(ik_rotated, k_rotated, nk1, nk2, nk3, 0, 0, 0, .false.)
@@ -1751,7 +1754,6 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
     !
     do iq_star = 1,n_star
       isym = list_of_isym(iq_star)
-      
       ! Note: isym is the index of the symmetry that brings
       ! S*q^star = q^irr
       
