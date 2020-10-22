@@ -238,18 +238,18 @@ subroutine set_wavefunction_gauge(ik)
   integer, intent(in) :: ik
   !
   integer :: g0_pool, ib, ib1, ib2, sizeSubspace, shap(2), nRows, nBands, &
-       num_local_plane_Waves,  i, j, ik_global, ngm_g_,  &
-       ios, ik_irr, isym, nbnd_, ig_rotated, ig1, ig2, ig, ib1_
+       num_local_plane_Waves,  i, j, ik_global, ngm_g_, degeneracy_group_counter, &
+       ios, ik_irr, isym, nbnd_, ig_rotated, ig1, ig2, ig, ib1_, degeneracy_group(nbnd)
   integer, save :: nk_full=0, nk1_, nk2_, nk3_
   integer, allocatable :: gmap(:)
   integer, allocatable, save :: xk_equiv(:), xk_equiv_symmetry(:), xk_weight(:)
   real(dp) :: theta, rotation(3,3), inv_rotation(3,3), translation(3), diff, &
        arg, this_rotated_g(3), this_g(3), xk_crys(3), xk_irr_from_file(3), &
-       umklapp_Vector(3), xk_irr_from_file_cart(3)
+       umklapp_Vector(3), xk_irr_from_file_cart(3), eigenvalues(nbnd)
   real(dp), allocatable, save :: g_global(:,:), xk_full_cart(:,:), &
        xk_full_cryst(:,:)
   real(dp), allocatable :: et_irr(:), rotated_g_global(:,:), g_global_(:,:)
-  complex(dp) :: correction, xc
+  complex(dp) :: correction, xc, unitary_matrix(nbnd,nbnd), delta_matrix(nbnd,nbnd)
   complex(dp), allocatable :: gauge_coefficients(:), evc_collected(:), &
        phases(:), evc_irreducible(:), evc_rotated(:), evc_test(:)
   character(len=64) :: file_name
@@ -312,6 +312,8 @@ subroutine set_wavefunction_gauge(ik)
   allocate(is_band_degenerate(nbnd))
   is_band_degenerate = .false.
   gauge_coefficients = cmplx(0.,0.,kind=dp)
+  degeneracy_group = 0
+  degeneracy_group_counter = 0
   if ( me_pool == g0_pool ) then
     ib = 0
     ! loop on bands
@@ -325,11 +327,14 @@ subroutine set_wavefunction_gauge(ik)
         end if
         sizeSubspace = sizeSubspace + 1;
       end do
+      degeneracy_group_counter = degeneracy_group_counter + 1
       if (sizeSubspace == 1) then
         gauge_coefficients(ib) = evc(1,ib)
+        degeneracy_group(ib) = degeneracy_group_counter
       else
         gauge_coefficients(ib:ib+sizeSubspace-1) = evc(1,ib)
         is_band_degenerate(ib:ib+sizeSubspace-1) = .true.
+        degeneracy_group(ib:ib+sizeSubspace-1) = degeneracy_group_counter
       end if
       ib = ib + sizeSubspace - 1;      
     end do ! band loop    
@@ -462,6 +467,8 @@ subroutine set_wavefunction_gauge(ik)
     
   ! if we run the scf, we need to save info to file
   if ( in_scf ) then ! -----------------------
+
+    ! print*, "Gauge saving"
     
     if ( me_pool == root_pool ) then
       write(ichar,"(I4.4)") ik_global
@@ -501,6 +508,8 @@ subroutine set_wavefunction_gauge(ik)
     
   else ! nscf ! ----------------------------------------------------
 
+    ! print*, "Gauge fixing"
+    
     ! Here is the funny part
     ! We are doing this nscf calculation on a full grid of points
     
@@ -525,7 +534,6 @@ subroutine set_wavefunction_gauge(ik)
       else
         file_name = trim(tmp_dir) // trim(prefix) // ".phoebe.scf."//ichar//".dat"
       end if
-
       
       open(unit=i_unit, file=TRIM(file_name), form='unformatted', &
            access='sequential', status='old', iostat=ios)
@@ -538,6 +546,16 @@ subroutine set_wavefunction_gauge(ik)
     call mp_bcast(is_band_degenerate_, me_pool, intra_pool_comm)
     call mp_bcast(nbnd_, me_pool, intra_pool_comm)
 
+    ! find the Umklapp vector between the current k and the k from file
+    umklapp_vector = matmul(s(:,:,isym),xk_crys(:)) - xk_irr_from_file(:)
+    ! make sure it has integer values
+    if ( sum(abs(umklapp_vector)) - nint(sum(abs(umklapp_vector))) > 1.0e-5 ) then
+      call errore("phoebe", "Umklapp with non-integer values. Wrong kPoints?", 1)
+      ! this also makes us test whether we are reading the correct wavevector
+    end if
+    ! we use cartesian coordinates
+    umklapp_vector = matmul(bg,umklapp_vector)
+
     ! Sanity check: et_irr should be roughly the same of the current energies et
     ! Note that this check should change when adding spin
     if ( nbnd_ /= nbnd ) call errore("phoebe","scf and nscf run with different bands",1)
@@ -549,17 +567,9 @@ subroutine set_wavefunction_gauge(ik)
         call errore("phoebe","Degeneracy info not consistent with the scf",1)
       end if        
     end do
-
-    ! find the Umklapp vector between the current k and the k from file
-    umklapp_vector = matmul(s(:,:,isym),xk_crys(:)) - xk_irr_from_file(:)
-    ! make sure it has integer values
-    if ( sum(abs(umklapp_vector)) - nint(sum(abs(umklapp_vector))) > 1.0e-5 ) then
-      call errore("phoebe", "Umklapp with non-integer values", 1)
-    end if
-    ! we use cartesian coordinates
-    umklapp_vector = matmul(bg,umklapp_vector)
     
     ! we reinforce the symmetry on energies, to reduce numerical noise
+    ! Note: this causes some noise
     ! et(:,ik) = et_irr(:)
 
     ! deallocate(is_band_degenerate, et_irr)
@@ -628,9 +638,9 @@ subroutine set_wavefunction_gauge(ik)
       phases(ig1) = cmplx(cos(arg), sin(arg), kind=dp)
     end do
     call mp_sum(phases, intra_pool_comm)
-    !print*, translation, isym
-    !write(*,"(3F12.5)") matmul(s(:,:,isym),xk_crys(:)) - xk_irr_from_file(:)
-    !write(*,"(6F12.5)") xk_crys(:), xk_irr_from_file(:)
+    ! print*, translation, isym
+    ! write(*,"(3F12.5)") matmul(s(:,:,isym),xk_crys(:)) - xk_irr_from_file(:)
+    ! write(*,"(6F12.5)") xk_crys(:), xk_irr_from_file(:)
 
     ! time_invariance = .false.
     
@@ -640,6 +650,9 @@ subroutine set_wavefunction_gauge(ik)
     allocate(evc_irreducible(ngm_g))
     allocate(evc_rotated(ngm_g))
 
+    ! create a matrix that rotates the wavefunctions according to symmetry
+    unitary_matrix = cmplx(0.,0.,kind=dp)
+   
     do ib1 = 1,nbnd
       evc_irreducible(:) = cmplx(0.,0.,kind=dp)
       evc_rotated(:) = cmplx(0.,0.,kind=dp)
@@ -679,16 +692,82 @@ subroutine set_wavefunction_gauge(ik)
       do ig = 1,ngk(ik)
         evc_collected(ig_l2g(igk_k(ig,ik))) = evc(ig,ib1)
       end do
-      !print*, ib1, is_band_degenerate(ib1), et(ib1,ik), abs(sum(conjg(evc_rotated)*evc_collected))
+      ! print*, ib1, degeneracy_group(ib1), et(ib1,ik), abs(sum(conjg(evc_rotated)*evc_collected))
       deallocate(evc_collected)
       
       ! substitute back in QE array
       ! In doing so, we must reorder the G-vectors and distribute the wavefunction
-      do ig = 1,ngk(ik)
-        evc(ig,ib1) = evc_rotated(ig_l2g(igk_k(ig,ik)))
-      end do
-    end do
+      !do ig = 1,ngk(ik)
+      !  evc(ig,ib1) = evc_rotated(ig_l2g(igk_k(ig,ik)))
+      !end do
+      
+     do ib2 = 1,nbnd
+       if ( degeneracy_group(ib1) == degeneracy_group(ib2) ) then
+         do ig = 1,ngk(ik)
+           unitary_matrix(ib1,ib2) = unitary_matrix(ib1,ib2) + &
+                conjg(evc(ig,ib2)) * evc_rotated(ig_l2g(igk_k(ig,ik)))
+         end do
+       end if
+     end do
 
+      ! print*, abs(sum(conjg(evc(:,ib1)) * evc(:,ib1)))
+      ! print*, abs(sum(conjg(evc(:,ib1)) * evc_rotated(ig_l2g(igk_k(:,ik)))))
+      ! print*, abs(sum(conjg(evc(:,ib1)) * evc_irreducible(:)))
+      ! print*, abs(sum(conjg(evc_irreducible(:)) * evc_rotated(ig_l2g(igk_k(:,ik)))))
+      ! do ig = 1,30
+      !   print*,ig,ig_l2g(ig),igk_k(ig,ik),gmap(ig),evc(ig,ib1),evc_rotated(ig_l2g(igk_k(ig,ik)))
+      ! end do
+      
+    end do
+    
+    call mp_sum(unitary_matrix, intra_pool_comm)
+
+    ! This is actually wrong!
+    ! unitary_matrix = ( unitary_matrix + conjg(transpose(unitary_matrix)) ) * 0.5d0
+
+!    do ib1 = 1,nbnd
+!      write(*,"(24F11.7)") unitary_matrix(ib1,:)
+!    end do
+        
+!    do ib1 = 1,nbnd
+!      print*, ib1, evc(1,ib1), sum(unitary_matrix(ib1,:)*evc(1,:))
+!    end do
+!    print*, "!!"
+
+    !------------------------------
+    ! reinforce matrix is unitary
+    delta_matrix = cmplx(0.,0.,kind=dp)
+    do ib1 = 1,nbnd
+      delta_matrix(ib1,ib1) = cmplx(1.,0.,kind=dp)
+    end do
+    delta_matrix = delta_matrix - matmul(unitary_matrix,conjg(transpose(unitary_matrix)))
+    delta_matrix = matmul(matmul(conjg(transpose(unitary_matrix)),delta_matrix),unitary_matrix)
+    do ib1 = 1,nbnd
+      delta_matrix(ib1,ib1) = delta_matrix(ib1,ib1) + cmplx(1.,0.,kind=dp)
+    end do
+    call zpotrf("L",nbnd,delta_matrix,nbnd,ib2)
+    if ( ib2 /= 0 ) call errore("phoebe","Cholesky failed",1)
+    unitary_matrix = matmul(unitary_matrix,delta_matrix)
+    
+!    call mp_bcast(unitary_matrix, root_pool, intra_pool_comm)
+
+!    do ib1 = 1,nbnd
+!      print*, ib1, evc(1,ib1), sum(unitary_matrix(ib1,:)*evc(1,:))
+!    end do
+
+!    do ib1 = 1,nbnd
+!      print*, ib1, sum(conjg(evc(:,ib1))*evc(:,ib1))
+!    end do
+    
+!    do ig = 1,ngk(ik)
+!      evc(ig,:) = matmul(unitary_matrix,evc(ig,:))
+!    end do    
+
+    unitary_matrix = matmul( unitary_matrix, conjg(transpose(unitary_matrix)) ) 
+!    do ib1 = 1,nbnd
+!      write(*,"(24F11.7)") unitary_matrix(ib1,:)
+!    end do
+    
     deallocate(is_band_degenerate, et_irr)
     deallocate(evc_rotated, evc_irreducible, gmap, phases)
     if ( me_pool == root_pool ) close(i_unit)
