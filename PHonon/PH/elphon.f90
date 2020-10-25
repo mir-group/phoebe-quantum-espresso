@@ -1425,7 +1425,8 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
     integer, external :: find_free_unit
     real(dp) :: vec(3), arg, my_S(3,3,48), my_xm(3,48,nat), my_v(3,48), vec2(3),  &
          k_rotated(3), q_rotated(3), q_star_cartesian(3,48), q_star_crystal(3,48),&
-         k_phonon_crystal(3), qdiff(3), q_phonon_crystal(3), q_phonon_cartesian(3)         
+         k_phonon_crystal(3), qdiff(3), q_phonon_crystal(3), q_phonon_cartesian(3), &
+         rotations_crystal(3,3,48)
     real(dp), allocatable :: energies_unfolded(:,:), ph_frequencies(:)
     complex(dp) :: phase
     complex(dp), allocatable :: gq_coupling(:,:,:,:,:), &
@@ -1464,10 +1465,12 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
       allocate(q_equiv_symmetry(nq))
       allocate(wk(nk))
       allocate(wq(nq))
+      rotations_crystal = 0.d0
+      rotations_crystal(:,:,1:nsym) = s(:,:,:)
       call find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, kgrid_full, &
-           k_equiv, wk, k_equiv_symmetry)
+           k_equiv, wk, k_equiv_symmetry, nsym, rotations_crystal)
       call find_irreducible_grid(nq1, nq2, nq3, 0, 0, 0, qgrid_full, &
-           q_equiv, wq, q_equiv_symmetry)
+           q_equiv, wq, q_equiv_symmetry, nsym, rotations_crystal)
       
       nq_irr = 0
       do i = 1,nq

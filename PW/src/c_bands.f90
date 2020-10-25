@@ -124,7 +124,7 @@ subroutine find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, xkg, equiv, &
             equiv(n) = nk
             wkk(nk) = wkk(nk) + 1
           else
-            IF (equiv(n)/=nk .or. n<nk ) CALL errore('phoeve_kpoint_grid', &
+            IF (equiv(n)/=nk .or. n<nk ) CALL errore('phoebe_kpoint_grid', &
                  'something wrong in the checking algorithm',1)
           end if
         end if
