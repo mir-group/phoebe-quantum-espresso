@@ -1620,6 +1620,10 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
     end do
     list_of_isym(1) = 1 ! we overwrite the first sym, which should be identity
     ! And I don't know what it's equal to otherwise
+    ! let's check it just in case
+    if ( s(1,1,1) /= 1 .or. s(2,2,1) /= 1 .or. s(3,3,1) /= 1 .or. sum(s(:,:,1)**2) /= 3 ) then
+      call errore("phoebe", "first isym not identity", 1)
+    end if
 
     ! Here we check that the symmetries of the star are correct
     do i = 1,n_star
@@ -1748,7 +1752,6 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
       my_S(:,:,isym) = sr(:,:,isym)
       my_v(:,isym) = - matmul(at,ft(:,isym))
     end do
-    
     
     allocate(ph_star_eigenvector(3, nat, 3*nat, n_star))
     ph_star_eigenvector = cmplx(0.,0.,kind=dp)
