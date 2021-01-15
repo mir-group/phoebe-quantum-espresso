@@ -55,7 +55,7 @@ end subroutine is_point_in_grid
 !-----------------------------------------------------------------------------
 !
 subroutine find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, xkg, equiv, &
-     wkk, equiv_symmetry, nsym, s)
+     wkk, equiv_symmetry, nsym, s, equiv_time_reversal)
   ! Returns:
   ! 1) the full grid of k-points
   ! 2) the weight of k-points on the full grid
@@ -67,23 +67,24 @@ subroutine find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, xkg, equiv, &
   integer, intent(in) :: nk1, nk2, nk3, k1, k2, k3, nsym
   integer, intent(out) :: equiv(nk1*nk2*nk3), wkk(nk1*nk2*nk3), &
        equiv_symmetry(nk1*nk2*nk3)
+  logical, intent(out) :: equiv_time_reversal(nk1*nk2*nk3)
   real(dp), intent(out) :: xkg(3,nk1*nk2*nk3)
   real(dp), intent(in) :: s(3,3,48)
   !
-  integer :: i, j, k, n, nk, nkr, ns, ik
+  integer :: i, j, k, n, nk, nk_full, isym, ik
   real(dp) :: xkr(3)
   logical :: in_the_list
   
-  nkr = nk1*nk2*nk3
-  do i=1,nk1
-    do j=1,nk2
-      do k=1,nk3
-        !  this is nothing but consecutive ordering
+  nk_full = nk1*nk2*nk3
+  do i = 1,nk1
+    do j = 1,nk2
+      do k = 1,nk3
+        ! this is nothing but consecutive ordering
         n = (k-1) + (j-1)*nk3 + (i-1)*nk2*nk3 + 1
         !  xkg are the components of the complete grid in crystal axis
-        xkg(1,n) = dble(i-1)/nk1 + dble(k1)/2/nk1
-        xkg(2,n) = dble(j-1)/nk2 + dble(k2)/2/nk2
-        xkg(3,n) = dble(k-1)/nk3 + dble(k3)/2/nk3
+        xkg(1,n) = dble(i-1) / nk1 + dble(k1) / 2. / nk1
+        xkg(2,n) = dble(j-1) / nk2 + dble(k2) / 2. / nk2
+        xkg(3,n) = dble(k-1) / nk3 + dble(k3) / 2. / nk3
       end do
     end do
   end do
@@ -91,30 +92,33 @@ subroutine find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, xkg, equiv, &
   !  equiv(nk) =nk : k-point nk is not equivalent to any previous k-point
   !  equiv(nk)!=nk : k-point nk is equivalent to k-point equiv(nk)
   
-  do nk=1,nkr
-    equiv(nk)=nk
+  do nk=1,nk_full
+    equiv(nk) = nk
+    equiv_time_reversal(nk) = .false.
     wkk(nk) = 1
     xkg(:,nk) = xkg(:,nk) - nint(xkg(:,nk))
   end do
     
-  do nk=1,nkr
+  do nk = 1,nk_full
     !  check if this k-point has already been found equivalent to another
     if (equiv(nk) == nk) THEN
       wkk(nk) = 1
       !  check if there are equivalent k-point to this in the list
       !  (excepted those previously found to be equivalent to another)
       !  check both k and -k
-      do ns=1,nsym
-        do i=1,3
-          xkr(i) = s(i,1,ns) * xkg(1,nk) &
-               + s(i,2,ns) * xkg(2,nk) &
-               + s(i,3,ns) * xkg(3,nk)
+      do isym = 1,nsym
+        do i = 1,3
+          xkr(i) = s(i,1,isym) * xkg(1,nk) &
+                 + s(i,2,isym) * xkg(2,nk) &
+                 + s(i,3,isym) * xkg(3,nk)
           xkr(i) = xkr(i) - nint( xkr(i) )
         end do
-        if ( t_rev(ns) == 1 ) xkr = - xkr
+        if ( t_rev(isym) == 1 ) then
+          xkr = - xkr
+          call errore('kpoint_grid', "Phoebe didn't check t_rev(isym), contact developers", 1)
+        end if
         
-        call is_point_in_grid(in_the_list, xkr, nk1, nk2, nk3, k1, k2, k3,&
-             .false.)
+        call is_point_in_grid(in_the_list, xkr, nk1, nk2, nk3, k1, k2, k3, .false.)
         
         if (in_the_list) THEN
           
@@ -122,27 +126,31 @@ subroutine find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, xkg, equiv, &
           
           if ( n>nk .and. equiv(n)==n ) then
             equiv(n) = nk
+            equiv_time_reversal(n) = .false.
             wkk(nk) = wkk(nk) + 1
           else
-            IF (equiv(n)/=nk .or. n<nk ) CALL errore('phoebe_kpoint_grid', &
-                 'something wrong in the checking algorithm',1)
+            if ( equiv(n)/=nk .or. n<nk ) then
+              call errore('phoebe_kpoint_grid', 'something wrong in the checking algorithm', 1)
+            end if
           end if
         end if
         if ( time_reversal ) then
           
-          call is_point_in_grid(in_the_list, xkr, nk1, nk2, nk3, k1, k2, k3,&
-               .true.)
+          call is_point_in_grid(in_the_list, xkr, nk1, nk2, nk3, k1, k2, k3, .true.)
           
-          if (in_the_list) then
+          if ( in_the_list ) then
             
             call get_point_index(n, xkr, nk1, nk2, nk3, k1, k2, k3, .true.)
             
-            if (n>nk .and. equiv(n)==n) then
+            if ( n > nk .and. equiv(n) == n ) then
+              print*, "with time reversal!", xkr
               equiv(n) = nk
+              equiv_time_reversal(n) = .true.
               wkk(nk) = wkk(nk) + 1
             else
-              if (equiv(n)/=nk.or.n<nk) CALL errore('kpoint_grid', &
-                   'something wrong in the checking algorithm',2)
+              if ( equiv(n) /= nk .or .n < nk ) then
+                call errore('kpoint_grid', 'something wrong in the checking algorithm', 2)
+              end if
             end if
           end if
         end if
@@ -155,27 +163,27 @@ subroutine find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, xkg, equiv, &
 
   equiv_symmetry = 1 ! default at identity matrix
 
-  do ik=1,nkr
-    !  check if this k-point has already been found equivalent to another
+  do ik = 1,nk_full
+    ! check if this k-point has already been found equivalent to another
     if (equiv(ik) == ik) then
       cycle ! identity matrix is the right one
     end if
     !
-    !  check if there are equivalent k-point to this in the list
-    !  (excepted those previously found to be equivalent to another)
-    !  check both k and -k
-    do ns=1,nsym
-      xkr(:) = matmul(s(:,:,ns), xkg(:,ik))
-      xkr(:) = xkr(:) - nint( xkr(:) )
-      ! if ( t_rev(ns) == 1 ) xkr = - xkr ! this is for magnetisim
+    ! check if there are equivalent k-point to this in the list
+    ! (excepted those previously found to be equivalent to another)
+    ! check both k and -k
+    do isym = 1,nsym
+      xkr(:) = matmul(s(:,:,isym), xkg(:,ik)) ! rotate
+      xkr(:) = xkr(:) - nint( xkr(:) ) ! fold in 1st BZ
+      ! if ( t_rev(isym) == 1 ) xkr = - xkr ! this is for magnetisim
       
       call is_point_in_grid(in_the_list, xkr, nk1, nk2, nk3, k1, k2, k3,&
-           .false.)
+           equiv_time_reversal(ik))
         
       if (in_the_list) THEN
-        call get_point_index(n, xkr, nk1, nk2, nk3, k1, k2, k3, .false.)
+        call get_point_index(n, xkr, nk1, nk2, nk3, k1, k2, k3, equiv_time_reversal(ik))
         if ( equiv(ik) == n ) then
-          equiv_symmetry(ik) = ns
+          equiv_symmetry(ik) = isym
           cycle
         end if
       end if
@@ -256,9 +264,10 @@ subroutine set_wavefunction_gauge(ik)
   character(len=64) :: file_name
   character(len=4) :: ichar
   logical, save :: first = .true.
-  logical :: any_prob, in_scf, in_nscf
+  logical :: any_prob, in_scf, in_nscf, add_time_reversal
   integer, parameter :: i_unit = 52
   real(dp), save :: rotations_crys(3,3,48)=0., rotations_cart(3,3,48)=0., fraction_trans(3,48)=0.
+  logical, allocatable :: xk_equiv_time_reversal(:)
   
   in_scf = (trim(calculation) == 'scf') ! .and. (restart) 
   in_nscf = (trim(calculation) == 'nscf') .or. (trim(calculation) == 'bands') &
@@ -456,8 +465,9 @@ subroutine set_wavefunction_gauge(ik)
     allocate(xk_equiv(nk_full))
     allocate(xk_weight(nk_full))
     allocate(xk_equiv_symmetry(nk_full)) ! index of symmetry s.t. S(idx)*k^irr = k
+    allocate(xk_equiv_time_reversal(nk_full)) ! whether to add time reversal to the symmetry operation
     call find_irreducible_grid(nk1_, nk2_, nk3_, k1, k2, k3, xk_full_cryst, &
-         xk_equiv, xk_weight, xk_equiv_symmetry, num_symmetries, rotations_crys)
+         xk_equiv, xk_weight, xk_equiv_symmetry, num_symmetries, rotations_crys, xk_equiv_time_reversal)
     
     allocate(xk_full_cart(3,nk_full)) ! same as xk_full_cryst, but in cartesian coords
     xk_full_cart = xk_full_cryst
@@ -537,6 +547,7 @@ subroutine set_wavefunction_gauge(ik)
     
     ik_irr = xk_equiv(ik_global)
     isym = xk_equiv_symmetry(ik_global)
+    add_time_reversal = xk_equiv_time_reversal(ik_global)
     
     rotation = rotations_cart(:,:,isym) ! such that R*k^red = k^irr, in cartesian space
     inv_rotation = transpose(rotation) ! Rotations are unitary
@@ -564,7 +575,11 @@ subroutine set_wavefunction_gauge(ik)
     call mp_bcast(nbnd_, me_pool, intra_pool_comm)
 
     ! find the Umklapp vector between the current k and the k from file
-    umklapp_vector = matmul(rotations_crys(:,:,isym),xk_crys(:)) - xk_irr_from_file(:)
+    if ( .not. add_time_reversal ) then
+      umklapp_vector = matmul(rotations_crys(:,:,isym),xk_crys(:)) - xk_irr_from_file(:)
+    else ! 
+      umklapp_vector = matmul(rotations_crys(:,:,isym),xk_crys(:)) + xk_irr_from_file(:)
+    end if
     ! make sure it has integer values
     if ( sum(abs(umklapp_vector)) - nint(sum(abs(umklapp_vector))) > 1.0e-5 ) then
       call errore("phoebe", "Umklapp with non-integer values. Wrong kPoints?", 1)
@@ -603,6 +618,7 @@ subroutine set_wavefunction_gauge(ik)
       ! note that G vectors are in cartesian coordinates, in units of 2Pi/alat
       this_g(:) = g_global(:,ig1)
       this_rotated_g(:) = matmul(inv_rotation, this_g(:)) + umklapp_vector
+
       rotated_g_global(:,ig1) = this_rotated_g(:)
     end do
 
@@ -614,13 +630,18 @@ subroutine set_wavefunction_gauge(ik)
       ! this search is expensive, so we go parallel within pool
       if ( mod(ig1-1,nproc_pool) /= me_pool ) cycle
       this_g(:) = g_global(:,ig1)
+
+      if ( add_time_reversal ) then
+        this_g = - this_g
+      end if
+      
       ! it seems that the first g-vector is 0.
       ! then there are non-zero vectors, then it's again a lot of zero vectors
       ! here we make sure that the first gmap refers to 0 g-vector
       if ( (sum(this_g**2) < 1.0e-6) .and. (ig1>10) ) cycle
       ig_rotated = 0
       do ig2 = 1,ngm_g
-        diff = sum(( g_global(:,ig1) - rotated_g_global(:,ig2) )**2)
+        diff = sum(( this_g(:) - rotated_g_global(:,ig2) )**2)
         if ( diff < 1.0e-6 ) then
           gmap(ig2) = ig1
           exit
@@ -693,11 +714,20 @@ subroutine set_wavefunction_gauge(ik)
 
       ! create evc_rotated: a wfc, not parallel distributed, with G-vectors
       ! ordered like g_global, which satisfies the symmetries
-      do ig = 1,ngm_g
-        if ( gmap(ig) > 0 ) then
-          evc_rotated(ig) = evc_irreducible(gmap(ig)) * phases(ig)
-        end if
-      end do
+
+      if ( .not. add_time_reversal ) then
+        do ig = 1,ngm_g
+          if ( gmap(ig) > 0 ) then
+            evc_rotated(ig) = evc_irreducible(gmap(ig)) * phases(ig)
+          end if
+        end do
+      else ! in case of time reversal, we conjugate the coefficients at -G, but not the phase!
+        do ig = 1,ngm_g
+          if ( gmap(ig) > 0 ) then
+            evc_rotated(ig) = conjg(evc_irreducible(gmap(ig))) * phases(ig)
+          end if
+        end do
+      end if
 
       allocate(evc_collected(ngm_g))
       evc_collected = cmplx(0.,0.,kind=dp)
