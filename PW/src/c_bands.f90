@@ -25,7 +25,37 @@ end subroutine get_point_index
 !
 !----------------------------------------------------
 !
-subroutine is_point_in_grid(is_k_in_list, k_rotated, &
+subroutine find_index_in_full_list(result_idx, k_crystal, nk1, nk2, nk3)
+  ! given a point in crystal coordinates,
+  ! finds the index of the point in the full grid
+  use kinds, only: dp
+  implicit none
+  integer, intent(out) :: result_idx
+  integer, intent(in) :: nk1, nk2, nk3
+  integer :: i, j, k, idx1, idx2
+  real(dp), intent(in) :: k_crystal(3)
+  
+  ! try without time reversal:
+  i = mod ( nint ( k_crystal(1)*nk1 + 2*nk1), nk1 ) + 1
+  j = mod ( nint ( k_crystal(2)*nk2 + 2*nk2), nk2 ) + 1
+  k = mod ( nint ( k_crystal(3)*nk3 + 2*nk3), nk3 ) + 1
+  idx1 = (k-1) + (j-1)*nk3 + (i-1)*nk2*nk3 + 1
+
+  ! next we add the time reversal
+  i = mod ( nint ( - k_crystal(1)*nk1 + 2*nk1), nk1 ) + 1
+  j = mod ( nint ( - k_crystal(2)*nk2 + 2*nk2), nk2 ) + 1
+  k = mod ( nint ( - k_crystal(3)*nk3 + 2*nk3), nk3 ) + 1
+  idx2 = (k-1) + (j-1)*nk3 + (i-1)*nk2*nk3 + 1
+
+  ! the irreducible point selected is the one with smallest value (the first found)
+  result_idx = min(idx1, idx2)  
+  
+  return
+end subroutine find_index_in_full_list
+!
+!----------------------------------------------------
+!
+subroutine is_point_in_grid_private(is_k_in_list, k_rotated, &
      nk1, nk2, nk3, k1, k2, k3, time_reversal)
   ! given a point in crystal coordinates,
   ! checks that it falls on the Monkhorst-Pack mesh
@@ -49,6 +79,39 @@ subroutine is_point_in_grid(is_k_in_list, k_rotated, &
   is_k_in_list = abs(xx-nint(xx))<=eps .and. &
        abs(yy-nint(yy))<=eps .and. &
        abs(zz-nint(zz))<=eps
+  return
+end subroutine is_point_in_grid_private
+!
+!----------------------------------------------------
+!
+subroutine is_point_in_grid(is_in_list, k_crystal, nk1, nk2, nk3)
+  ! given a point in crystal coordinates,
+  ! checks that it falls on the Monkhorst-Pack mesh
+  use kinds, only: dp
+  implicit none
+  logical, intent(out) :: is_in_list
+  integer, intent(in) :: nk1, nk2, nk3
+  real(dp), intent(in) :: k_crystal(3)
+  real(dp) :: xx, yy, zz, fac
+  real(dp), parameter :: eps = 1.0d-5
+  
+  xx = fac * k_crystal(1) * nk1
+  yy = fac * k_crystal(2) * nk2
+  zz = fac * k_crystal(3) * nk3
+  is_in_list = abs(xx-nint(xx)) <= eps .and. &
+       abs(yy-nint(yy)) <= eps .and. &
+       abs(zz-nint(zz)) <= eps
+
+  ! if is_in_list = .true., we return true
+  if ( .not. is_in_list ) then ! otherwise we attempt using time reversal
+    xx = - k_crystal(1) * nk1
+    yy = - k_crystal(2) * nk2
+    zz = - k_crystal(3) * nk3
+    is_in_list = abs(xx-nint(xx)) <= eps .and. &
+         abs(yy-nint(yy)) <= eps .and. &
+         abs(zz-nint(zz)) <= eps
+  end if
+  
   return
 end subroutine is_point_in_grid
 !
@@ -118,7 +181,7 @@ subroutine find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, xkg, equiv, &
           call errore('kpoint_grid', "Phoebe didn't check t_rev(isym), contact developers", 1)
         end if
         
-        call is_point_in_grid(in_the_list, xkr, nk1, nk2, nk3, k1, k2, k3, .false.)
+        call is_point_in_grid_private(in_the_list, xkr, nk1, nk2, nk3, k1, k2, k3, .false.)
         
         if (in_the_list) THEN
           
@@ -136,7 +199,7 @@ subroutine find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, xkg, equiv, &
         end if
         if ( time_reversal ) then
           
-          call is_point_in_grid(in_the_list, xkr, nk1, nk2, nk3, k1, k2, k3, .true.)
+          call is_point_in_grid_private(in_the_list, xkr, nk1, nk2, nk3, k1, k2, k3, .true.)
           
           if ( in_the_list ) then
             
@@ -148,7 +211,7 @@ subroutine find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, xkg, equiv, &
               equiv_time_reversal(n) = .true.
               wkk(nk) = wkk(nk) + 1
             else
-              if ( equiv(n) /= nk .or .n < nk ) then
+              if ( equiv(n) /= nk .or. n < nk ) then
                 call errore('kpoint_grid', 'something wrong in the checking algorithm', 2)
               end if
             end if
@@ -177,7 +240,7 @@ subroutine find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, xkg, equiv, &
       xkr(:) = xkr(:) - nint( xkr(:) ) ! fold in 1st BZ
       ! if ( t_rev(isym) == 1 ) xkr = - xkr ! this is for magnetisim
       
-      call is_point_in_grid(in_the_list, xkr, nk1, nk2, nk3, k1, k2, k3,&
+      call is_point_in_grid_private(in_the_list, xkr, nk1, nk2, nk3, k1, k2, k3,&
            equiv_time_reversal(ik))
         
       if (in_the_list) THEN
@@ -467,7 +530,8 @@ subroutine set_wavefunction_gauge(ik)
     allocate(xk_equiv_symmetry(nk_full)) ! index of symmetry s.t. S(idx)*k^irr = k
     allocate(xk_equiv_time_reversal(nk_full)) ! whether to add time reversal to the symmetry operation
     call find_irreducible_grid(nk1_, nk2_, nk3_, k1, k2, k3, xk_full_cryst, &
-         xk_equiv, xk_weight, xk_equiv_symmetry, num_symmetries, rotations_crys, xk_equiv_time_reversal)
+         xk_equiv, xk_weight, xk_equiv_symmetry, num_symmetries, rotations_crys, &
+         xk_equiv_time_reversal)
     
     allocate(xk_full_cart(3,nk_full)) ! same as xk_full_cryst, but in cartesian coords
     xk_full_cart = xk_full_cryst
@@ -487,7 +551,7 @@ subroutine set_wavefunction_gauge(ik)
   end do
   ! find index of the irred. point in my global list of points
   ! this also folds point correctly in 1st BZ
-  call get_point_index(ik_global, xk_crys, nk1_,nk2_,nk3_, k1,k2,k3, .false.)
+  call find_index_in_full_list(ik_global, xk_crys, nk1_, nk2_, nk3_)
 
   !---------------------------------------------
   ! Step 3:

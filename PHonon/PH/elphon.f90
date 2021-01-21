@@ -1349,7 +1349,7 @@ END SUBROUTINE elphsum_simple
 
 
 
-subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
+subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_point_crystal)
   use kinds, only: dp
     implicit none
     real(dp), intent(in) :: q_reference_crystal(3), q_point_crystal(3)
@@ -1375,7 +1375,7 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
     end do
     
     return
-  end subroutine is_point_equal
+  end subroutine is_point_translational_equivalent
   !
   !------------------------------------------------------------
   !
@@ -1422,11 +1422,12 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
          ii, jj, ios, kk, ll, k, i_cart, j_cart, my_kBig_to_k(48,nat), kbig, &
          i_pattern, i_mode, na, isq(48), imq, i1, i2, nb, i3         
     integer, allocatable :: list_of_isym(:)
+    logical, allocatable :: list_of_time_reversal(:)
     integer, external :: find_free_unit
     real(dp) :: vec(3), arg, my_S(3,3,48), my_xm(3,48,nat), my_v(3,48), vec2(3),  &
          k_rotated(3), q_rotated(3), q_star_cartesian(3,48), q_star_crystal(3,48),&
          k_phonon_crystal(3), qdiff(3), q_phonon_crystal(3), q_phonon_cartesian(3), &
-         rotations_crystal(3,3,48)
+         rotations_crystal(3,3,48), factor
     real(dp), allocatable :: energies_unfolded(:,:), ph_frequencies(:)
     complex(dp) :: phase
     complex(dp), allocatable :: gq_coupling(:,:,:,:,:), &
@@ -1434,7 +1435,8 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
          el_ph_mat_cartesian(:,:,:,:), test_vec(:,:), Dq(:,:)
     character(len=4) :: iq_char
     character(len=200) :: file_phoebe, file_xml
-    logical :: q_in_the_list, k_in_the_list
+    logical :: q_in_the_list, k_in_the_list, add_time_reversal
+    logical, allocatable :: k_equiv_time_reversal(:), q_equiv_time_reversal(:)
     
     ! Note: this subroutine is called n_q^irr times
     ! i.e. the number of irreducible q-points used during the phonon run
@@ -1463,14 +1465,16 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
       allocate(q_equiv(nq))
       allocate(k_equiv_symmetry(nk))
       allocate(q_equiv_symmetry(nq))
+      allocate(k_equiv_time_reversal(nk))
+      allocate(q_equiv_time_reversal(nq))
       allocate(wk(nk))
       allocate(wq(nq))
       rotations_crystal = 0.d0
       rotations_crystal(:,:,1:nsym) = s(:,:,:)
       call find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, kgrid_full, &
-           k_equiv, wk, k_equiv_symmetry, nsym, rotations_crystal)
+           k_equiv, wk, k_equiv_symmetry, nsym, rotations_crystal, k_equiv_time_reversal)
       call find_irreducible_grid(nq1, nq2, nq3, 0, 0, 0, qgrid_full, &
-           q_equiv, wq, q_equiv_symmetry, nsym, rotations_crystal)
+           q_equiv, wq, q_equiv_symmetry, nsym, rotations_crystal, q_equiv_time_reversal)
       
       nq_irr = 0
       do i = 1,nq
@@ -1534,11 +1538,10 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
       ! Note: this unfolding doesn't work with spin
       allocate(energies_unfolded(nbnd,nk))
       energies_unfolded = 0.
-      do i = 1,nkstot
+      do i = 1,nkstot ! loop over irreducible kpoints
         k_phonon_crystal = xk_collect(:,i) ! wavevector used in the phonon code
         CALL cryst_to_cart(1, k_phonon_crystal, at, -1) ! fold to crystal coords
-        call get_point_index(iq_full, k_phonon_crystal, nk1, nk2, nk3, k1, k2, k3,&
-             .false.)
+        call find_index_in_full_list(iq_full, k_phonon_crystal, nk1, nk2, nk3)
         ! iq_full is the index of the vector in xk_collect inside my list
         do j = 1,nk
           if ( k_equiv(j) == iq_full ) then
@@ -1590,8 +1593,8 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! Reconstructs the current star of qpoints
     ! 
-    call star_q1(q_phonon_cartesian, at, bg, nsym, s, invs, n_star, q_star_cartesian, &
-         isq, imq, .TRUE., t_rev)
+    call star_q1(q_phonon_cartesian, at, bg, nsym, s, invs, n_star, &
+         q_star_cartesian, isq, imq, .true., t_rev)
     ! convert q_star to crystal coords.
     q_star_crystal = q_star_cartesian
     do i = 1,n_star
@@ -1601,7 +1604,7 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
     !----------------------------------------------------------------------------
     ! Find index of the irreducible qpoint in the list of points for Phoebe
     ! iq_full is the index of q (from ph.x) in my grid of q points
-    call get_point_index(iq_full, q_phonon_crystal, nq1, nq2, nq3, 0, 0, 0, .false.)
+    call find_index_in_full_list(iq_full, q_phonon_crystal, nq1, nq2, nq3)
     ! verify that the point was found
     qdiff(:) = q_phonon_crystal(:) - qgrid_full(:,iq_full)
     qdiff = qdiff - nint(qdiff)
@@ -1625,11 +1628,19 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
       call errore("phoebe", "first isym not identity", 1)
     end if
 
+    ! here we also collect information on the use of time reversal symmetry in the star
+    allocate(list_of_time_reversal(n_star))
+    list_of_time_reversal = .false.
+    do j = 1,n_star
+      call find_index_in_full_list(i, q_star_crystal(:,j), nq1, nq2, nq3)
+      list_of_time_reversal(j) = q_equiv_time_reversal(i)
+    end do
+
     ! Here we check that the symmetries of the star are correct
     do i = 1,n_star
       isym = list_of_isym(i)
       q_rotated = matmul(s(:,:,isym), q_star_crystal(:,i))
-      call is_point_equal(q_in_the_list, q_star_crystal(:,1), q_rotated)
+      call is_point_translational_equivalent(q_in_the_list, q_star_crystal(:,1), q_rotated)
       if ( .not. q_in_the_list ) then
         call errore("phoebe", "Star symms problem", 1)
       end if
@@ -1679,6 +1690,7 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
 
     do iq_star = 1,n_star
       isym = list_of_isym(iq_star) ! index of symmetry that maps q to q*
+      add_time_reversal = list_of_time_reversal(iq_star)
       !
       do iksq = 1,nksqtot ! loop over the k's computed by phonon.x
         ! (xk_collect(3, nkstot) k point coordinates
@@ -1689,12 +1701,21 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
         !
         k_rotated = matmul(s(:,:,isym), k_phonon_crystal) ! rotate point
         q_rotated = matmul(s(:,:,isym), q_phonon_crystal) ! q_phonon is the irred q-point
+        if ( add_time_reversal ) then
+          k_rotated = - k_rotated
+          q_rotated = - q_rotated
+        end if
         k_rotated(:) = k_rotated(:) - nint( k_rotated(:) ) ! fold in 1st BZ 
         q_rotated(:) = q_rotated(:) - nint( q_rotated(:) )
         !
-        call is_point_in_grid(k_in_the_list, k_rotated, nk1, nk2, nk3, 0, 0, 0, .false.)
-        call is_point_in_grid(q_in_the_list, q_rotated, nq1, nq2, nq3, 0, 0, 0, .false.)
+        ! Note that we must use the same symmetry operation for both k and q
         !
+        ! Here we check that both points rotate and end up on the grid
+        ! if not, then the coupling is zero
+        call is_point_in_grid(k_in_the_list, k_rotated, nk1, nk2, nk3)
+        call is_point_in_grid(q_in_the_list, q_rotated, nq1, nq2, nq3)
+        !
+        ! but q should always rotate on the grid, for the way we defined isym
         if ( .not. q_in_the_list ) then
           call errore("phoebe", "unexpected q rotation")
         end if
@@ -1702,10 +1723,10 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
         ! if both points rotate and stay on the grid
         ! then we can assign values to the rotated g coupling
         ! if they are not rotating, we have 0 el-ph coupling
-        if ( k_in_the_list ) then
+        if ( k_in_the_list .and. q_in_the_list ) then
           ! index of point in the full grid
-          call get_point_index(ik_rotated, k_rotated, nk1, nk2, nk3, 0, 0, 0, .false.)
-          call get_point_index(iq_rotated, q_rotated, nq1, nq2, nq3, 0, 0, 0, .false.)          
+          call find_index_in_full_list(ik_rotated, k_rotated, nk1, nk2, nk3)
+          call find_index_in_full_list(iq_rotated, q_rotated, nq1, nq2, nq3)
           gq_coupling(:,:,ik_rotated,:,iq_star) = el_ph_mat_cartesian(:,:,iksq,:)
         end if
         !
@@ -1762,6 +1783,7 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
       isym = list_of_isym(iq_star)
       ! Note: isym is the index of the symmetry that brings
       ! S*q^star = q^irr
+      add_time_reversal = list_of_time_reversal(iq_star)
       
       do kBig = 1,nat
         k = my_kBig_to_k(isym,kBig)
@@ -1770,7 +1792,10 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
         ! In detail: I checked below that the dynamicam matrix is the same
         ! of what is printed in the {prefix}.dyn* files
         ! However, it doesn't seem to match the equation 2.34. Boh
-        vec = matmul(sr(:,:,isym), tau(:,k)) - tau(:,kBig)
+        factor = 1.
+        if ( add_time_reversal ) factor = -1.
+        
+        vec = factor * matmul(sr(:,:,isym), tau(:,k)) - tau(:,kBig)
         arg = tpi * sum(q_star_cartesian(:,iq_star)*vec)
         phase = cmplx(cos(arg),-sin(arg),kind=dp)
         
@@ -1792,7 +1817,7 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
             jj = 3 * (k-1) + j_cart
             ph_star_eigenvector(i_cart,kBig,:,iq_star) =        &
                  ph_star_eigenvector(i_cart,kBig,:,iq_star)     &
-                 + phase * my_s(i_cart,j_cart,isym) * dyn(jj,:)
+                 + factor * phase * my_s(i_cart,j_cart,isym) * dyn(jj,:)
           end do
         end do
       end do
@@ -1890,7 +1915,7 @@ subroutine is_point_equal(is_in_grid, q_reference_crystal, q_point_crystal)
     
     deallocate(gq_coupling, ph_star_eigenvector)
     deallocate(el_ph_mat_cartesian, ph_frequencies)
-    deallocate(list_of_isym)
+    deallocate(list_of_isym, list_of_time_reversal)
 
     return
   end subroutine elphfil_phoebe
