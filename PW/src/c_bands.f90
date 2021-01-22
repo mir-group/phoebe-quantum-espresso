@@ -1,54 +1,32 @@
 ! Phoebe
+module pw_phoebe
+  public
 
-subroutine get_point_index(n,k_rotated,nk1,nk2,nk3,k1,k2,k3, time_reversal)
+contains
+  
+subroutine find_index_in_full_list(idx, k_crystal, nk1, nk2, nk3, time_reversal)
   ! given a point in crystal coordinates,
   ! finds the index of the point in the full grid
   use kinds, only: dp
   implicit none
-  integer, intent(out) :: n
-  integer, intent(in) :: nk1, nk2, nk3, k1, k2, k3
-  integer :: i, j, k
+  integer, intent(out) :: idx
   logical, intent(in) :: time_reversal
-  real(dp), intent(in) :: k_rotated(3)
-  real(dp) :: fac
-  if ( time_reversal ) then
-    fac = - 1.
-  else
-    fac = 1.
-  end if
-  i = mod ( nint ( fac * k_rotated(1)*nk1 - 0.5d0*k1 + 2*nk1), nk1 ) + 1
-  j = mod ( nint ( fac * k_rotated(2)*nk2 - 0.5d0*k2 + 2*nk2), nk2 ) + 1
-  k = mod ( nint ( fac * k_rotated(3)*nk3 - 0.5d0*k3 + 2*nk3), nk3 ) + 1
-  n = (k-1) + (j-1)*nk3 + (i-1)*nk2*nk3 + 1
-  return
-end subroutine get_point_index
-!
-!----------------------------------------------------
-!
-subroutine find_index_in_full_list(result_idx, k_crystal, nk1, nk2, nk3)
-  ! given a point in crystal coordinates,
-  ! finds the index of the point in the full grid
-  use kinds, only: dp
-  implicit none
-  integer, intent(out) :: result_idx
   integer, intent(in) :: nk1, nk2, nk3
   integer :: i, j, k, idx1, idx2
   real(dp), intent(in) :: k_crystal(3)
+  real(dp) :: factor
+
+  if ( time_reversal ) then
+    factor = - 1.
+  else
+    factor = 1.
+  end if
   
   ! try without time reversal:
-  i = mod ( nint ( k_crystal(1)*nk1 + 2*nk1), nk1 ) + 1
-  j = mod ( nint ( k_crystal(2)*nk2 + 2*nk2), nk2 ) + 1
-  k = mod ( nint ( k_crystal(3)*nk3 + 2*nk3), nk3 ) + 1
-  idx1 = (k-1) + (j-1)*nk3 + (i-1)*nk2*nk3 + 1
-
-  ! next we add the time reversal
-  i = mod ( nint ( - k_crystal(1)*nk1 + 2*nk1), nk1 ) + 1
-  j = mod ( nint ( - k_crystal(2)*nk2 + 2*nk2), nk2 ) + 1
-  k = mod ( nint ( - k_crystal(3)*nk3 + 2*nk3), nk3 ) + 1
-  idx2 = (k-1) + (j-1)*nk3 + (i-1)*nk2*nk3 + 1
-
-  ! the irreducible point selected is the one with smallest value (the first found)
-  result_idx = min(idx1, idx2)  
+  i = mod ( nint ( factor * k_crystal(1)*nk1 + 2*nk1), nk1 ) + 1
+  j = mod ( nint ( factor * k_crystal(2)*nk2 + 2*nk2), nk2 ) + 1
+  k = mod ( nint ( factor * k_crystal(3)*nk3 + 2*nk3), nk3 ) + 1
+  idx = (k-1) + (j-1)*nk3 + (i-1)*nk2*nk3 + 1
   
   return
 end subroutine find_index_in_full_list
@@ -185,8 +163,8 @@ subroutine find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, xkg, equiv, &
         
         if (in_the_list) THEN
           
-          call get_point_index(n, xkr, nk1, nk2, nk3, k1, k2, k3, .false.)
-          
+          call find_index_in_full_list(n, xkr, nk1, nk2, nk3, .false.)
+
           if ( n>nk .and. equiv(n)==n ) then
             equiv(n) = nk
             equiv_time_reversal(n) = .false.
@@ -203,10 +181,9 @@ subroutine find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, xkg, equiv, &
           
           if ( in_the_list ) then
             
-            call get_point_index(n, xkr, nk1, nk2, nk3, k1, k2, k3, .true.)
+            call find_index_in_full_list(n, xkr, nk1, nk2, nk3, .true.)
             
             if ( n > nk .and. equiv(n) == n ) then
-              print*, "with time reversal!", xkr
               equiv(n) = nk
               equiv_time_reversal(n) = .true.
               wkk(nk) = wkk(nk) + 1
@@ -238,13 +215,12 @@ subroutine find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, xkg, equiv, &
     do isym = 1,nsym
       xkr(:) = matmul(s(:,:,isym), xkg(:,ik)) ! rotate
       xkr(:) = xkr(:) - nint( xkr(:) ) ! fold in 1st BZ
-      ! if ( t_rev(isym) == 1 ) xkr = - xkr ! this is for magnetisim
-      
-      call is_point_in_grid_private(in_the_list, xkr, nk1, nk2, nk3, k1, k2, k3,&
+
+      call is_point_in_grid_private(in_the_list, xkr, nk1, nk2, nk3, k1, k2, k3, &
            equiv_time_reversal(ik))
         
       if (in_the_list) THEN
-        call get_point_index(n, xkr, nk1, nk2, nk3, k1, k2, k3, equiv_time_reversal(ik))
+        call find_index_in_full_list(n, xkr, nk1, nk2, nk3, equiv_time_reversal(ik))
         if ( equiv(ik) == n ) then
           equiv_symmetry(ik) = isym
           cycle
@@ -330,7 +306,7 @@ subroutine set_wavefunction_gauge(ik)
   logical :: any_prob, in_scf, in_nscf, add_time_reversal
   integer, parameter :: i_unit = 52
   real(dp), save :: rotations_crys(3,3,48)=0., rotations_cart(3,3,48)=0., fraction_trans(3,48)=0.
-  logical, allocatable :: xk_equiv_time_reversal(:)
+  logical, allocatable, save :: xk_equiv_time_reversal(:)
   
   in_scf = (trim(calculation) == 'scf') ! .and. (restart) 
   in_nscf = (trim(calculation) == 'nscf') .or. (trim(calculation) == 'bands') &
@@ -410,11 +386,11 @@ subroutine set_wavefunction_gauge(ik)
     end do ! band loop    
   end if
  
-  ! test: let's fix the gauge Re{c(G=0)}>0, Im{c(G=0)}=0
+  ! now we broadcast the phase factor
   call mp_bcast(gauge_coefficients, g0_pool, intra_pool_comm)
   call mp_bcast(degeneracy_group, g0_pool, intra_pool_comm)
   
-  ! for every band, find max
+  ! multiply the wavefunction for the factor that makes G=0 coefficient real>0
   do ib = 1,nbnd
     xc = gauge_coefficients(ib)
     ! Now, I compute and impose the gauge
@@ -489,9 +465,13 @@ subroutine set_wavefunction_gauge(ik)
         else
           file_name = trim(tmp_dir) // trim(prefix) // ".phoebe.scf.0000.dat"
         end if
+
+        ! Note: ph.x decides to change the scratch folder structure
+        ! if you specify flags for the el-ph coupling...
         open(unit=i_unit, file=trim(file_name), form = 'unformatted', &
              access='sequential', status='old', iostat=ios)
-        if ( ios /= 0 ) call errore("phoebe", "file not found", 1)
+        if ( ios /= 0 ) call errore("phoebe", "file not found, did you set fildvscf in input?", 1)
+        
         read(i_unit) ngm_g_ ! # of global G vectors
         read(i_unit) nk1_, nk2_, nk3_ ! kgrid mesh
         ! I checked that g vectors are the same
@@ -551,7 +531,7 @@ subroutine set_wavefunction_gauge(ik)
   end do
   ! find index of the irred. point in my global list of points
   ! this also folds point correctly in 1st BZ
-  call find_index_in_full_list(ik_global, xk_crys, nk1_, nk2_, nk3_)
+  call find_index_in_full_list(ik_global, xk_crys, nk1_, nk2_, nk3_, .false.)
 
   !---------------------------------------------
   ! Step 3:
@@ -562,8 +542,6 @@ subroutine set_wavefunction_gauge(ik)
   ! if we run the scf, we need to save info to file
   if ( in_scf ) then ! -----------------------
 
-    ! print*, "Gauge saving"
-    
     if ( me_pool == root_pool ) then
       write(ichar,"(I4.4)") ik_global
       file_name = trim(tmp_dir)//trim(prefix)//".phoebe.scf."//ichar//".dat"
@@ -600,22 +578,21 @@ subroutine set_wavefunction_gauge(ik)
     end if
     
   else ! nscf ! ----------------------------------------------------
-
-    ! print*, "Gauge fixing"
     
-    ! Here is the funny part
+    ! Here we assume the step above has been previously done
     ! We are doing this nscf calculation on a full grid of points
+    ! And we rotate the wavefunction based on what we have on disk
     
     ! First, we find the index of the current kpoint
     ! in the list of irreducible points
-    
+
     ik_irr = xk_equiv(ik_global)
+
     isym = xk_equiv_symmetry(ik_global)
     add_time_reversal = xk_equiv_time_reversal(ik_global)
     
     rotation = rotations_cart(:,:,isym) ! such that R*k^red = k^irr, in cartesian space
     inv_rotation = transpose(rotation) ! Rotations are unitary
-
     ! Read from file the energies of the irreducible point
     allocate(et_irr(nbnd))
     et_irr = 0.0d0
@@ -623,6 +600,8 @@ subroutine set_wavefunction_gauge(ik)
       ! read info on g vectors and symmetries
       write(ichar,"(I4.4)") ik_irr
       if ( calculation == "none" ) then ! case of phonons
+        ! Note: ph.x changes the scratch structure if fildvscf or electron_phonon is specified
+        ! go figure
         file_name = trim(tmp_dir) // "/../../" //trim(prefix)// ".phoebe.scf."//ichar//".dat"
       else
         file_name = trim(tmp_dir) // trim(prefix) // ".phoebe.scf."//ichar//".dat"
@@ -630,6 +609,9 @@ subroutine set_wavefunction_gauge(ik)
       
       open(unit=i_unit, file=TRIM(file_name), form='unformatted', &
            access='sequential', status='old', iostat=ios)
+      if ( ios /= 0 ) then
+        call errore("phoebe", "phoebe.*.dat file not found", 1)
+      end if
       read(i_unit) xk_irr_from_file
       read(i_unit) nbnd_
       read(i_unit) et_irr(:)
@@ -642,7 +624,7 @@ subroutine set_wavefunction_gauge(ik)
     if ( .not. add_time_reversal ) then
       umklapp_vector = matmul(rotations_crys(:,:,isym),xk_crys(:)) - xk_irr_from_file(:)
     else ! 
-      umklapp_vector = matmul(rotations_crys(:,:,isym),xk_crys(:)) + xk_irr_from_file(:)
+      umklapp_vector = - matmul(rotations_crys(:,:,isym),xk_crys(:)) - xk_irr_from_file(:)
     end if
     ! make sure it has integer values
     if ( sum(abs(umklapp_vector)) - nint(sum(abs(umklapp_vector))) > 1.0e-5 ) then
@@ -729,17 +711,10 @@ subroutine set_wavefunction_gauge(ik)
     do ig1 = 1,ngm_g
       if ( mod(ig1-1,nproc_pool) /= me_pool ) cycle
       if ( (sum(g_global(:,ig1)**2) < 1.0e-6) .and. (ig1>10) ) cycle
-      ! arg = - tpi * dot_product( matmul(rotation,xk_irr_from_file_cart) + g_global(:,ig1) , translation )
-      ! arg = - tpi * dot_product( xk(:,ik) + g_global(:,ig1) , translation )
       arg = tpi * dot_product( matmul(rotation,xk_irr_from_file_cart) + g_global(:,ig1) , translation )
       phases(ig1) = cmplx(cos(arg), sin(arg), kind=dp)
     end do
     call mp_sum(phases, intra_pool_comm)
-    ! print*, translation, isym
-    ! write(*,"(3F12.5)") matmul(s(:,:,isym),xk_crys(:)) - xk_irr_from_file(:)
-    ! write(*,"(6F12.5)") xk_crys(:), xk_irr_from_file(:)
-
-    ! time_invariance = .false.
     
     !-------------------------------------------------------
     ! Rotate wavefunction plane wave coefficients
@@ -798,7 +773,6 @@ subroutine set_wavefunction_gauge(ik)
       do ig = 1,ngk(ik)
         evc_collected(ig_l2g(igk_k(ig,ik))) = evc(ig,ib1)
       end do
-      ! print*, ib1, degeneracy_group(ib1), et(ib1,ik), abs(sum(conjg(evc_rotated)*evc_collected))
       deallocate(evc_collected)
       
       ! substitute back in QE array
@@ -815,33 +789,13 @@ subroutine set_wavefunction_gauge(ik)
          end do
        end if
      end do
-
-      ! print*, abs(sum(conjg(evc(:,ib1)) * evc(:,ib1)))
-      ! print*, abs(sum(conjg(evc(:,ib1)) * evc_rotated(ig_l2g(igk_k(:,ik)))))
-      ! print*, abs(sum(conjg(evc(:,ib1)) * evc_irreducible(:)))
-      ! print*, abs(sum(conjg(evc_irreducible(:)) * evc_rotated(ig_l2g(igk_k(:,ik)))))
-      ! do ig = 1,30
-      !   print*,ig,ig_l2g(ig),igk_k(ig,ik),gmap(ig),evc(ig,ib1),evc_rotated(ig_l2g(igk_k(ig,ik)))
-      ! end do
       
     end do
     
     call mp_sum(unitary_matrix, intra_pool_comm)
 
-    ! This is actually wrong!
-    ! unitary_matrix = ( unitary_matrix + conjg(transpose(unitary_matrix)) ) * 0.5d0
-
-!    do ib1 = 1,nbnd
-!      write(*,"(24F11.7)") unitary_matrix(ib1,:)
-!    end do
-        
-!    do ib1 = 1,nbnd
-!      print*, ib1, evc(1,ib1), sum(unitary_matrix(ib1,:)*evc(1,:))
-!    end do
-!    print*, "!!"
-
     !------------------------------
-    ! reinforce matrix is unitary
+    ! reinforce matrix is unitary (but note it's not hermitian)
     delta_matrix = cmplx(0.,0.,kind=dp)
     do ib1 = 1,nbnd
       delta_matrix(ib1,ib1) = cmplx(1.,0.,kind=dp)
@@ -855,24 +809,7 @@ subroutine set_wavefunction_gauge(ik)
     if ( ib2 /= 0 ) call errore("phoebe","Cholesky failed",1)
     unitary_matrix = matmul(unitary_matrix,delta_matrix)
     
-!    call mp_bcast(unitary_matrix, root_pool, intra_pool_comm)
-
-!    do ib1 = 1,nbnd
-!      print*, ib1, evc(1,ib1), sum(unitary_matrix(ib1,:)*evc(1,:))
-!    end do
-
-!    do ib1 = 1,nbnd
-!      print*, ib1, sum(conjg(evc(:,ib1))*evc(:,ib1))
-!    end do
-    
-!    do ig = 1,ngk(ik)
-!      evc(ig,:) = matmul(unitary_matrix,evc(ig,:))
-!    end do    
-
     unitary_matrix = matmul( unitary_matrix, conjg(transpose(unitary_matrix)) ) 
-!    do ib1 = 1,nbnd
-!      write(*,"(24F11.7)") unitary_matrix(ib1,:)
-!    end do
     
     deallocate(et_irr)
     deallocate(evc_rotated, evc_irreducible, gmap, phases)
@@ -883,7 +820,7 @@ subroutine set_wavefunction_gauge(ik)
   return
 end subroutine set_wavefunction_gauge
 
-
+end module pw_phoebe
 
 
 
@@ -1069,6 +1006,8 @@ SUBROUTINE diag_bands( iter, ik, avg_iter )
   USE mp_bands,             ONLY : nproc_bgrp, intra_bgrp_comm, inter_bgrp_comm, &
                                    my_bgrp_id, nbgrp
   USE mp,                   ONLY : mp_sum, mp_bcast
+
+  use pw_phoebe
   !
   IMPLICIT NONE
   !
