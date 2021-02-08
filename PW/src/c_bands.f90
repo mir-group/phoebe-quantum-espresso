@@ -228,7 +228,9 @@ subroutine find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, xkg, equiv, &
       end if
     end do
     
-    if ( equiv_symmetry(ik) == 1 ) then
+    if ( equiv_symmetry(ik) == 1 .and. (.not. equiv_time_reversal(ik))  ) then
+      print*, xkg(:,ik)
+      print*, equiv_time_reversal(ik)
       call errore("phoebe", "Failed to find rotation",1)
     end if
     
