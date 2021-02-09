@@ -1735,7 +1735,11 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
           ! index of point in the full grid
           call find_index_in_full_list(ik_rotated, k_rotated, nk1, nk2, nk3, add_time_reversal)
           call find_index_in_full_list(iq_rotated, q_rotated, nq1, nq2, nq3, add_time_reversal)
-          gq_coupling(:,:,ik_rotated,:,iq_star) = el_ph_mat_cartesian(:,:,iksq,:)
+          if (add_time_reversal) then
+            gq_coupling(:,:,ik_rotated,:,iq_star) = conjg(el_ph_mat_cartesian(:,:,iksq,:))
+          else 
+            gq_coupling(:,:,ik_rotated,:,iq_star) = el_ph_mat_cartesian(:,:,iksq,:)
+          end if
         end if
         !
       end do ! end nsym
@@ -1747,9 +1751,9 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
     ! Eq. 2.31 or 2.33 from Maradudin & Vosko, Rev. Mod. Phys. (1968)
     ! https://journals.aps.org/rmp/abstract/10.1103/RevModPhys.40.1
 
-    if ( imq == 0 ) then
-      call errore("phoebe", "debug imq=0",1)
-    end if
+    !if ( imq == 0 ) then
+    !  call errore("phoebe", "debug imq=0",1)
+    !end if
     ! Note that the first point in the star list is the point being computed
     
     ! Testing Eq. 2.4 from Maradudin and Vosko
@@ -1800,19 +1804,23 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
         ! In detail: I checked below that the dynamicam matrix is the same
         ! of what is printed in the {prefix}.dyn* files
         ! However, it doesn't seem to match the equation 2.34. Boh
-        factor = 1.
-        if ( add_time_reversal ) factor = -1.
         
-        vec = factor * matmul(sr(:,:,isym), tau(:,k)) - tau(:,kBig)
+        vec = matmul(sr(:,:,isym), tau(:,k)) - tau(:,kBig)
         arg = tpi * sum(q_star_cartesian(:,iq_star)*vec)
         phase = cmplx(cos(arg),-sin(arg),kind=dp)
 
         do i_cart = 1,3
           do j_cart = 1,3
             jj = 3 * (k-1) + j_cart
-            ph_star_eigenvector(i_cart,kBig,:,iq_star) =        &
-                 ph_star_eigenvector(i_cart,kBig,:,iq_star)     &
-                 + factor * phase * my_s(i_cart,j_cart,isym) * dyn(jj,:)
+            if ( add_time_reversal ) then
+              ph_star_eigenvector(i_cart,kBig,:,iq_star) =        &
+                   ph_star_eigenvector(i_cart,kBig,:,iq_star)     &
+                   + conjg(phase * my_s(i_cart,j_cart,isym) * dyn(jj,:))
+            else
+              ph_star_eigenvector(i_cart,kBig,:,iq_star) =        &
+                   ph_star_eigenvector(i_cart,kBig,:,iq_star)     &
+                   + phase * my_s(i_cart,j_cart,isym) * dyn(jj,:)
+            end if
           end do
         end do
       end do
