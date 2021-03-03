@@ -640,7 +640,9 @@ subroutine set_wavefunction_gauge(ik)
     ! Note that this check should change when adding spin
     if ( nbnd_ /= nbnd ) call errore("phoebe","scf and nscf run with different bands",1)
     do ib = 1,nbnd
-      if ( abs(et_irr(ib) - et(ib,ik)) > 1.0e-4 ) then
+      if ( abs(et_irr(ib) - et(ib,ik)) > 1.0e-2 ) then
+        print*, et_irr(:)
+        print*, et(:,ik)
         call errore("phoebe","incorrect symmetry on energies",1)
       end if
     end do
