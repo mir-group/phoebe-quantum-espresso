@@ -643,7 +643,7 @@ subroutine set_wavefunction_gauge(ik)
       if ( abs(et_irr(ib) - et(ib,ik)) > 1.0e-2 ) then
         print*, et_irr(:)
         print*, et(:,ik)
-        call errore("phoebe","incorrect symmetry on energies",1)
+        call errore("phoebe","incorrect symmetry on energies. Try increase the cutoffs.",1)
       end if
     end do
     
