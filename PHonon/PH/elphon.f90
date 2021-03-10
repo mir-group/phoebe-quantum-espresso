@@ -1646,20 +1646,14 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
     end if
 
     ! here we also collect information on the use of time reversal symmetry in the star
-    if ( imq == 0 ) then
+    if ( imq == 0 ) then ! if we have to use time reversal symmetry (and there is no inversion)
       allocate(list_of_time_reversal(2*n_star))
       list_of_time_reversal(1:n_star) = .false.
-      list_of_time_reversal(n_star+1:) = .true.
+      list_of_time_reversal(n_star+1:) = .true. ! the second half is manually built with time reversal
     else
       allocate(list_of_time_reversal(n_star))
       list_of_time_reversal = .false.
     end if
-    
-!    list_of_time_reversal = .false.
-!    do j = 1,n_star
-!      call find_index_in_full_list(i, q_star_crystal(:,j), nq1, nq2, nq3, .false.)
-!      list_of_time_reversal(j) = q_equiv_time_reversal(i)
-!    end do
 
     ! Here we check that the symmetries of the star are correct
     do i = 1,n_star
@@ -1671,18 +1665,17 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
       end if
     end do
 
-
-    
-    if ( imq == 0 ) then
-      
+    if ( imq == 0 ) then ! if we need to apply time reversal symmetry
       do i = 1,n_star
         q_star_cartesian(:,n_star+i) = - q_star_cartesian(:,i)
         q_star_crystal(:,n_star+i) = - q_star_crystal(:,i)
         isq(n_star+i) = isq(i)
         list_of_isym(n_star+i) = list_of_isym(i)
-      end do      
+      end do
       n_star = 2 * n_star
     end if
+    ! Note: if imq /= 0, we don't need to apply time reversal.
+    ! for example, when we can reconstruct things with the inversion symmetry
     
     !-------------------------------------------------------------------
     ! We miss a couple of things to the el_ph_mat matrix
