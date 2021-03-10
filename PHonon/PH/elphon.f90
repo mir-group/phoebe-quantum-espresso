@@ -1600,12 +1600,18 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
     ! Reconstructs the current star of qpoints
     ! 
     call star_q1(q_phonon_cartesian, at, bg, nsym, s, invs, n_star, &
-         q_star_cartesian, isq, imq, .true., t_rev)
+         q_star_cartesian, isq, imq, .false., t_rev)
     ! convert q_star to crystal coords.
     q_star_crystal = q_star_cartesian
     do i = 1,n_star
       call cryst_to_cart(1, q_star_crystal(:,i), at, -1)
     end do
+
+    ! Note: star_q1 reconstructs the reducible star, but doesn't take into account
+    ! for the time reversal symmetry. So, in systems without the inversion symmetry,
+    ! star_q1 doesn't reconstruct the full reducible star of q-points
+    ! we have to add it if imq = 0 (see the code of star_q1)
+    ! -> I've got to do it later
 
     !----------------------------------------------------------------------------
     ! Find index of the irreducible qpoint in the list of points for Phoebe
@@ -1618,7 +1624,12 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
       call errore("phoebe", "qpoint grid not ordered as expected 2", 1)
     end if
 
-    allocate(list_of_isym(n_star))
+    if ( imq == 0 ) then
+      allocate(list_of_isym(2*n_star))
+    else
+      allocate(list_of_isym(n_star))
+    end if
+  
     list_of_isym = 0
     do j = 1,n_star
       do isym = 1,nsym
@@ -1635,12 +1646,20 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
     end if
 
     ! here we also collect information on the use of time reversal symmetry in the star
-    allocate(list_of_time_reversal(n_star))
-    list_of_time_reversal = .false.
-    do j = 1,n_star
-      call find_index_in_full_list(i, q_star_crystal(:,j), nq1, nq2, nq3, .false.)
-      list_of_time_reversal(j) = q_equiv_time_reversal(i)
-    end do
+    if ( imq == 0 ) then
+      allocate(list_of_time_reversal(2*n_star))
+      list_of_time_reversal(1:n_star) = .false.
+      list_of_time_reversal(n_star+1:) = .true.
+    else
+      allocate(list_of_time_reversal(n_star))
+      list_of_time_reversal = .false.
+    end if
+    
+!    list_of_time_reversal = .false.
+!    do j = 1,n_star
+!      call find_index_in_full_list(i, q_star_crystal(:,j), nq1, nq2, nq3, .false.)
+!      list_of_time_reversal(j) = q_equiv_time_reversal(i)
+!    end do
 
     ! Here we check that the symmetries of the star are correct
     do i = 1,n_star
@@ -1651,6 +1670,19 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
         call errore("phoebe", "Star symms problem", 1)
       end if
     end do
+
+
+    
+    if ( imq == 0 ) then
+      
+      do i = 1,n_star
+        q_star_cartesian(:,n_star+i) = - q_star_cartesian(:,i)
+        q_star_crystal(:,n_star+i) = - q_star_crystal(:,i)
+        isq(n_star+i) = isq(i)
+        list_of_isym(n_star+i) = list_of_isym(i)
+      end do      
+      n_star = 2 * n_star
+    end if
     
     !-------------------------------------------------------------------
     ! We miss a couple of things to the el_ph_mat matrix
@@ -1812,18 +1844,16 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
         do i_cart = 1,3
           do j_cart = 1,3
             jj = 3 * (k-1) + j_cart
-            if ( add_time_reversal ) then
-              ph_star_eigenvector(i_cart,kBig,:,iq_star) =        &
-                   ph_star_eigenvector(i_cart,kBig,:,iq_star)     &
-                   + conjg(phase * my_s(i_cart,j_cart,isym) * dyn(jj,:))
-            else
-              ph_star_eigenvector(i_cart,kBig,:,iq_star) =        &
-                   ph_star_eigenvector(i_cart,kBig,:,iq_star)     &
-                   + phase * my_s(i_cart,j_cart,isym) * dyn(jj,:)
-            end if
+            ph_star_eigenvector(i_cart,kBig,:,iq_star) =        &
+                 ph_star_eigenvector(i_cart,kBig,:,iq_star)     &
+                 + phase * my_s(i_cart,j_cart,isym) * dyn(jj,:)
           end do
         end do
       end do
+
+      if ( add_time_reversal ) then ! z(-k) = z*(k)
+        ph_star_eigenvector(:,:,:,iq_star) = conjg(ph_star_eigenvector(:,:,:,iq_star))
+      end if
       !
     end do
 
