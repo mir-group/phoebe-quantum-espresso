@@ -42,3 +42,6 @@ LAXlib/*.fh
 archive/v3.1.0
 include/qe_cdefs.h
 LIBBEEF/
+WANT
+want
+archive/*
