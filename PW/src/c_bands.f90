@@ -618,10 +618,10 @@ subroutine set_wavefunction_gauge(ik)
       read(i_unit) nbnd_
       read(i_unit) et_irr(:)
     end if
-    call mp_bcast(et_irr, me_pool, intra_pool_comm)
-    call mp_bcast(xk_irr_from_file, me_pool, intra_pool_comm)
-    call mp_bcast(nbnd_, me_pool, intra_pool_comm)
-
+    call mp_bcast(et_irr, root_pool, intra_pool_comm)
+    call mp_bcast(xk_irr_from_file, root_pool, intra_pool_comm)
+    call mp_bcast(nbnd_, root_pool, intra_pool_comm)
+    
     ! find the Umklapp vector between the current k and the k from file
     if ( .not. add_time_reversal ) then
       umklapp_vector = matmul(rotations_crys(:,:,isym),xk_crys(:)) - xk_irr_from_file(:)
@@ -638,7 +638,9 @@ subroutine set_wavefunction_gauge(ik)
 
     ! Sanity check: et_irr should be roughly the same of the current energies et
     ! Note that this check should change when adding spin
-    if ( nbnd_ /= nbnd ) call errore("phoebe","scf and nscf run with different bands",1)
+    if ( nbnd_ /= nbnd ) then      
+      call errore("phoebe","scf and nscf run with different bands",nbnd_)
+    end if
     do ib = 1,nbnd
       if ( abs(et_irr(ib) - et(ib,ik)) > 1.0e-2 ) then
         print*, et_irr(:)
@@ -741,11 +743,11 @@ subroutine set_wavefunction_gauge(ik)
         read(i_unit) ib1_
         read(i_unit) evc_irreducible          
       end if
-      call mp_bcast(ib1_, me_pool, intra_pool_comm)
+      call mp_bcast(ib1_, root_pool, intra_pool_comm)
       if ( ib1 /= ib1_ ) then
         call errore("phoebe", "Unexpected degenerate band", 1)
       end if
-      call mp_bcast(evc_irreducible, me_pool, intra_pool_comm)
+      call mp_bcast(evc_irreducible, root_pool, intra_pool_comm)
 
       !---------------------------------------------------------------------
       ! Rotate the wavefunction
