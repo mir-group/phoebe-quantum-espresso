@@ -276,7 +276,7 @@ subroutine set_wavefunction_gauge(ik)
        nproc_pool, my_pool_id
   use mp, only: mp_bcast, mp_sum
   use mp_world, only: mpime
-  use klist, only: igk_k, ngk, xk
+  use klist, only: igk_k, ngk, xk, nks
   use cell_base, only: tpiba, bg, at
   use io_files, only: prefix, tmp_dir
   use start_k, only: nk1, nk2, nk3, k1, k2, k3
@@ -496,6 +496,12 @@ subroutine set_wavefunction_gauge(ik)
       if ( ngm_g_ /= ngm_g ) then
         call errore("phoebe", "Different number of Gvectors in restart", 1)
       end if
+
+      if ( trim(calculation) /= "none" ) then ! not in phonon, but bands or nscf
+        if (nk1_*nk2_*nk3_ /= nks) then
+          call errore("phoebe c_bands", "kpoints in nscf not the same as scf?", 1)
+        end if
+      end if
       
     end if
     
@@ -641,7 +647,8 @@ subroutine set_wavefunction_gauge(ik)
     if ( nbnd_ /= nbnd ) then      
       call errore("phoebe","scf and nscf run with different bands",nbnd_)
     end if
-    do ib = 1,nbnd
+    do ib = 1,max(nbnd-1,1)
+      ! I exclude the last band, because for empty states QE doesn't converge it well
       if ( abs(et_irr(ib) - et(ib,ik)) > 1.0e-2 ) then
         print*, et_irr(:)
         print*, et(:,ik)
