@@ -273,7 +273,7 @@ subroutine set_wavefunction_gauge(ik)
   use parallel_include
   use input_parameters, only: calculation
   use mp_pools, only: intra_pool_comm, me_pool, root_pool, &
-       nproc_pool, my_pool_id
+       nproc_pool, my_pool_id, inter_pool_comm
   use mp, only: mp_bcast, mp_sum
   use mp_world, only: mpime
   use klist, only: igk_k, ngk, xk, nks
@@ -289,7 +289,8 @@ subroutine set_wavefunction_gauge(ik)
   !
   integer :: g0_pool, ib, ib1, ib2, sizeSubspace, shap(2), nRows, nBands, &
        num_local_plane_Waves,  i, j, ik_global, ngm_g_, degeneracy_group_counter, &
-       ios, ik_irr, isym, nbnd_, ig_rotated, ig1, ig2, ig, ib1_, degeneracy_group(nbnd)
+       ios, ik_irr, isym, nbnd_, ig_rotated, ig1, ig2, ig, ib1_, &
+       degeneracy_group(nbnd), total_points
   integer, save :: nk_full=0, nk1_, nk2_, nk3_, num_symmetries
   integer, allocatable :: gmap(:)
   integer, allocatable, save :: xk_equiv(:), xk_equiv_symmetry(:), xk_weight(:)
@@ -498,7 +499,12 @@ subroutine set_wavefunction_gauge(ik)
       end if
 
       if ( trim(calculation) /= "none" ) then ! not in phonon, but bands or nscf
-        if (nk1_*nk2_*nk3_ /= nks) then
+
+        total_points = nks
+        call mp_sum(total_points, inter_pool_comm)
+        
+        if (nk1_*nk2_*nk3_ /= total_points) then
+          ! careful: nks is the number of points in the pool
           call errore("phoebe c_bands", "kpoints in nscf not the same as scf?", 1)
         end if
       end if
