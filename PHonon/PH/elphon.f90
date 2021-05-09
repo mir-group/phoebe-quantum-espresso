@@ -1380,7 +1380,7 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
   !------------------------------------------------------------
   !
   subroutine elphfil_phoebe(iq, xk_collect, ikks_collect, et_collect, &
-       el_ph_mat_collect)
+       el_ph_mat_collect, wk_collect)
     USE constants, ONLY : ry_to_thz, ry_to_cmm1, amu_ry    
     use constants, only: tpi
     use io_files, only: tmp_dir, prefix
@@ -1407,7 +1407,12 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
     ! iq: index of current irreducible qpoint
     ! el_ph: g coupling on the irreducible set of k/q
     !        for now, we are using the full set of k
-    real(dp), intent(in) :: et_collect(nbnd,nkstot), xk_collect(3,nkstot)
+    ! wk_collect: weight for k-points in input.
+    !
+    ! Note on kpoints: in the nscf calculation before the calculation of dfpt,
+    ! nscf computes the wavefunction at k and k'=k+q. For some reason, the el-ph coupling matrix
+    ! runs on both k and k'. Use weight to decide if it's k (relevant) or k' (discard)
+    real(dp), intent(in) :: et_collect(nbnd,nkstot), xk_collect(3,nkstot), wk_collect(nkstot)
     integer, intent(in) :: ikks_collect(nksqtot)
     integer, intent(in) :: iq
     complex(dp), intent(in) :: el_ph_mat_collect(nbnd, nbnd, nksqtot, nmodes)
@@ -1750,19 +1755,36 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
         end do
       end do
 
-    else
+    else ! q /= 0
 
       do iq_star = 1,n_star
-        isym = list_of_isym(iq_star) ! index of symmetry that maps q to q*
+        isym = list_of_isym(iq_star) ! index of symmetry that maps q to q*: S.qRed=qIrr
         add_time_reversal = list_of_time_reversal(iq_star)
+
+
+        
+        ! Verify this is a symmetry
+        q_rotated = matmul(s(:,:,isym), q_phonon_crystal) ! q_phonon is the irred q-point
+        if (add_time_reversal) then
+          q_rotated = - q_rotated
+        end if
+        call find_index_in_full_list(iq_rotated, q_rotated, nq1, nq2, nq3, .false.)
+        print*, iq_rotated,  q_equiv(iq_rotated), nkstot
+
+        
+        i = 0
         !
         ! Note: nksqtot is the list of kpoints computed by ph.x at current q-point
         ! For q=0, nksqtot runs over irreducible points only
         !
         do iksq = 1,nksqtot ! loop over the k's computed by phonon.x
+          
           ! (xk_collect(3, nkstot) k point coordinates
           ! ikks_collect(nksqtot) ! indeces of k vectors in the loop nksqtot
           ik_phonon = ikks_collect(iksq) ! index of k in xk_collect list
+
+          if ( wk_collect(ik_phonon) == 0. ) cycle
+          
           k_phonon_crystal = xk_collect(:,ik_phonon) ! k wavevector in cartesian coordinates
           CALL cryst_to_cart(1, k_phonon_crystal, at, -1) ! in crystal coords
           !
@@ -1788,15 +1810,19 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
           if ( .not. q_in_the_list ) then
             call errore("phoebe", "unexpected q rotation")
           end if
-
+          
           !
           ! if both points rotate and stay on the grid
           ! then we can assign values to the rotated g coupling
           ! if they are not rotating, we have 0 el-ph coupling
           if ( k_in_the_list .and. q_in_the_list ) then
+
+            i = i + 1
+            
             ! index of point in the full grid
             call find_index_in_full_list(ik_rotated, k_rotated, nk1, nk2, nk3, add_time_reversal)
             call find_index_in_full_list(iq_rotated, q_rotated, nq1, nq2, nq3, add_time_reversal)
+            
             if (add_time_reversal) then
               gq_coupling(:,:,ik_rotated,:,iq_star) = conjg(el_ph_mat_cartesian(:,:,iksq,:))
             else 
@@ -1804,8 +1830,9 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
             end if
           end if
           !
-        end do ! end nsym
-      end do
+        end do ! end k
+        print*, i, "!!!!!!!!!!!!"
+      end do ! end nsym
 
     end if
 
@@ -2169,7 +2196,7 @@ SUBROUTINE elphfil_epa(iq)
   ! ENDIF
   CALL cryst_to_cart(nkstot, xk_collect, bg, 1)
 
-  call elphfil_phoebe(iq, xk_collect, ikks_collect, et_collect, el_ph_mat_collect)
+  call elphfil_phoebe(iq, xk_collect, ikks_collect, et_collect, el_ph_mat_collect, wk_collect)
 
   DEALLOCATE(xk_collect)
   DEALLOCATE(wk_collect)
