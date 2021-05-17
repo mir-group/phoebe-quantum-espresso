@@ -1613,7 +1613,7 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
     do i = 1,n_star
       call cryst_to_cart(1, q_star_crystal(:,i), at, -1)
     end do
-imq = 1
+
     ! Note: star_q1 reconstructs the reducible star, but doesn't take into account
     ! for the time reversal symmetry. So, in systems without the inversion symmetry,
     ! star_q1 doesn't reconstruct the full reducible star of q-points
@@ -1861,11 +1861,9 @@ imq = 1
       do iq_star = 1,n_star
         isym = list_of_isym(iq_star) ! index of symmetry that maps q to q*: S.qIrr = qRed
         add_time_reversal = list_of_time_reversal(iq_star)
-        if ( add_time_reversal ) call errore("No!","No!",1)
         
         rotation = s(:,:,isym)
         inv_rotation = transpose(rotation)
-        
         
         ! Verify this is a symmetry
         q_rotated = matmul(inv_rotation, q_phonon_crystal) ! q_phonon is the irred q-point
@@ -1901,9 +1899,9 @@ imq = 1
           ! Here we check that both points rotate and end up on the grid
           ! if not, then the coupling is zero
           call is_point_in_grid_private(k_in_the_list, k_rotated, nk1, nk2, nk3, &
-               0, 0, 0, add_time_reversal)
+               0, 0, 0, .false.)
           call is_point_in_grid_private(q_in_the_list, q_rotated, nq1, nq2, nq3, &
-               0, 0, 0, add_time_reversal)
+               0, 0, 0, .false.)
           !
           ! but q should always rotate on the grid, for the way we defined isym
           if ( .not. q_in_the_list ) then
@@ -1916,7 +1914,7 @@ imq = 1
           ! if they are not rotating, we have 0 el-ph coupling
           if ( k_in_the_list .and. q_in_the_list ) then            
             ! index of point in the full grid
-            call find_index_in_full_list(ik_rotated, k_rotated, nk1, nk2, nk3, add_time_reversal)
+            call find_index_in_full_list(ik_rotated, k_rotated, nk1, nk2, nk3, .false.)
 
             if (add_time_reversal) then
               gq_coupling(:,:,ik_rotated,:,iq_star) = conjg(el_ph_mat_cartesian(:,:,iksq,:))
