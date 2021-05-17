@@ -1788,17 +1788,17 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
     ! pattern rotate
     allocate(tmp_el_ph_mat(nbnd, nbnd, nksqtot, nmodes))
     tmp_el_ph_mat = cmplx(0.,0.,kind=dp)    
-
     do i_pattern = 1,nmodes
         do i_mode = 1,nmodes
         tmp_el_ph_mat(:,:,:,i_mode) = tmp_el_ph_mat(:,:,:,i_mode) &
-             + conjg(u(i_pattern,i_mode))                         &
+             + conjg(u(i_mode,i_pattern))                         &
              * el_ph_mat_collect(:,:,:,i_pattern)
+        ! note: it seems to produce similar results also without conjg()
       end do
       ! without symmetries, u is just an identity
     end do
 
-    ! tmp_el_ph_mat = el_ph_mat_collect
+
     allocate(el_ph_mat_cartesian(nbnd, nbnd, nksqtot, nmodes))
     el_ph_mat_cartesian = cmplx(0.,0.,kind=dp)
     iq_star = 1
@@ -1848,6 +1848,8 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
           if ( k_equiv(ik_rotated) == ik_phonon ) then
             add_time_reversal = k_equiv_time_reversal(ik_rotated)
             if (add_time_reversal) then
+              ! using time reversal (H^+=H), you can show that
+              ! ( <k+q | dV_q | k> )^* = <-k-q | dV_-q | -k>
               gq_coupling(:,:,ik_rotated,:,iq) = conjg(el_ph_mat_cartesian(:,:,iksq,:))
             else 
               gq_coupling(:,:,ik_rotated,:,iq) = el_ph_mat_cartesian(:,:,iksq,:)
@@ -1866,8 +1868,10 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
         inv_rotation = transpose(rotation)
         
         ! Verify this is a symmetry
-        q_rotated = matmul(inv_rotation, q_phonon_crystal) ! q_phonon is the irred q-point
-        call find_index_in_full_list(iq_rotated, q_rotated, nq1, nq2, nq3, add_time_reversal)
+        q_rotated = matmul(rotation, q_phonon_crystal) ! q_phonon is the irred q-point
+        if ( add_time_reversal ) q_rotated = - q_rotated
+        call find_index_in_full_list(iq_rotated, q_rotated, nq1, nq2, nq3, .false.)
+        print*, iq_star, iq_rotated, xk_collect(:,iq_rotated*2-1)
         
         
         !
@@ -1886,7 +1890,7 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
           CALL cryst_to_cart(1, k_phonon_crystal, at, -1) ! in crystal coords
           !
           k_rotated = matmul(rotation, k_phonon_crystal) ! rotate the reducible k-point
-          q_rotated = matmul(inv_rotation, q_phonon_crystal) ! rotate the irreducible q-point
+          q_rotated = matmul(rotation, q_phonon_crystal) ! rotate the irreducible q-point
           if ( add_time_reversal ) then
             k_rotated = - k_rotated
             q_rotated = - q_rotated
@@ -1917,6 +1921,8 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
             call find_index_in_full_list(ik_rotated, k_rotated, nk1, nk2, nk3, .false.)
 
             if (add_time_reversal) then
+              ! using time reversal (H^+=H), you can show that
+              ! ( <k+q | dV_q | k> )^* = <-k-q | dV_-q | -k>
               gq_coupling(:,:,ik_rotated,:,iq_star) = conjg(el_ph_mat_cartesian(:,:,iksq,:))
             else 
               gq_coupling(:,:,ik_rotated,:,iq_star) = el_ph_mat_cartesian(:,:,iksq,:)
