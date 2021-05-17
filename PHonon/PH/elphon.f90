@@ -1868,11 +1868,9 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
         inv_rotation = transpose(rotation)
         
         ! Verify this is a symmetry
-        q_rotated = matmul(rotation, q_phonon_crystal) ! q_phonon is the irred q-point
-        if ( add_time_reversal ) q_rotated = - q_rotated
-        call find_index_in_full_list(iq_rotated, q_rotated, nq1, nq2, nq3, .false.)
-        print*, iq_star, iq_rotated, xk_collect(:,iq_rotated*2-1)
-        
+        ! q_rotated = matmul(rotation, q_phonon_crystal) ! q_phonon is the irred q-point
+        ! if ( add_time_reversal ) q_rotated = - q_rotated
+        ! call find_index_in_full_list(iq_rotated, q_rotated, nq1, nq2, nq3, .false.)        
         
         !
         ! Note: nksqtot is the list of kpoints computed by ph.x at current q-point
@@ -1923,9 +1921,9 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
             if (add_time_reversal) then
               ! using time reversal (H^+=H), you can show that
               ! ( <k+q | dV_q | k> )^* = <-k-q | dV_-q | -k>
-              gq_coupling(:,:,ik_rotated,:,iq_star) = conjg(el_ph_mat_cartesian(:,:,iksq,:))
+              gq_coupling(:,:,iksq,:,iq_star) = conjg(el_ph_mat_cartesian(:,:,ik_rotated,:))
             else 
-              gq_coupling(:,:,ik_rotated,:,iq_star) = el_ph_mat_cartesian(:,:,iksq,:)
+              gq_coupling(:,:,iksq,:,iq_star) = el_ph_mat_cartesian(:,:,ik_rotated,:)
             end if
           end if
           !
@@ -1934,16 +1932,6 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
 
     end if
 
-
-
-
-    iq_star = 1
-    do i_mode = 1,nmodes
-      print*, i_mode, sum(gq_coupling(:,:,:,i_mode,iq_star) &
-           * conjg(gq_coupling(:,:,:,i_mode,iq_star)))
-    end do
-    
-    
 
     if ( .false. ) then
       ! In this test, I build the dynamical matrixes
