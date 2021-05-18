@@ -730,7 +730,7 @@ subroutine set_wavefunction_gauge(ik)
     do ig1 = 1,ngm_g
       if ( mod(ig1-1,nproc_pool) /= me_pool ) cycle
       if ( (sum(g_global(:,ig1)**2) < 1.0e-6) .and. (ig1>10) ) cycle
-      arg = tpi * dot_product( matmul(rotation,xk_irr_from_file_cart) + g_global(:,ig1) , translation )
+      arg = -tpi * dot_product( matmul(rotation,xk_irr_from_file_cart) + g_global(:,ig1) , translation )
       phases(ig1) = cmplx(cos(arg), sin(arg), kind=dp)
     end do
     call mp_sum(phases, intra_pool_comm)
