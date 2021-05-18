@@ -17,7 +17,7 @@ SUBROUTINE run_nscf(do_band, iq)
   USE basis,           ONLY : starting_wfc, starting_pot, startingconfig
   USE io_files,        ONLY : prefix, tmp_dir, wfc_dir, seqopn
   USE lsda_mod,        ONLY : nspin
-  USE control_flags,   ONLY : restart
+  USE control_flags,   ONLY : restart, diago_full_acc
   USE check_stop,      ONLY : check_stop_now
   USE fft_base,        ONLY : dffts, dfftp
   !!!
@@ -103,6 +103,7 @@ SUBROUTINE run_nscf(do_band, iq)
   CALL fft_type_allocate ( dffts, at, bg, gcutms, intra_bgrp_comm, nyfft=nyfft)
   !
   CALL setup_nscf ( newgrid, xq, elph_mat .OR. elph_ahc .or. elph_epa )
+  diago_full_acc = .true.
   !
   CALL init_run()
   !
