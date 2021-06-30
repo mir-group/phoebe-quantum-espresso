@@ -306,7 +306,7 @@ subroutine set_wavefunction_gauge(ik)
   character(len=64) :: file_name
   character(len=4) :: ichar
   logical, save :: first = .true.
-  logical :: any_prob, in_scf, in_nscf, add_time_reversal
+  logical :: any_prob, in_scf, in_nscf, add_time_reversal, file_exists
   integer, parameter :: i_unit = 52
   real(dp), save :: rotations_crys(3,3,48)=0., rotations_cart(3,3,48)=0., fraction_trans(3,48)=0.
   logical, allocatable, save :: xk_equiv_time_reversal(:)
@@ -440,6 +440,14 @@ subroutine set_wavefunction_gauge(ik)
       ! Save info on the G grid, to check that runs are consistent        
       if ( my_pool_id == 0 .and. me_pool == root_pool ) then
         file_name = trim(tmp_dir) // trim(prefix) // ".phoebe.scf.0000.dat"
+        ! 
+        inquire(file=file_name, exist=file_exists)
+        if ( file_exists ) then
+          call errore("phoebe", "A gauge has already been set. "// &
+               "To delete it, rm old scratch files in outdir "//&
+               "and redo any ph.x and wannier90 calculation", 1)
+        end if
+        !
         open(unit = i_unit, file = TRIM(file_name), form = 'unformatted', &
              access = 'sequential', status = 'replace', iostat = ios)
         write(i_unit) ngm_g
