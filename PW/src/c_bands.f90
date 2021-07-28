@@ -276,7 +276,7 @@ subroutine set_wavefunction_gauge(ik)
        nproc_pool, my_pool_id, inter_pool_comm
   use mp, only: mp_bcast, mp_sum
   use mp_world, only: mpime
-  use klist, only: igk_k, ngk, xk, nks
+  use klist, only: igk_k, ngk, xk, nks, nelec
   use cell_base, only: tpiba, bg, at
   use io_files, only: prefix, tmp_dir
   use start_k, only: nk1, nk2, nk3, k1, k2, k3
@@ -296,7 +296,7 @@ subroutine set_wavefunction_gauge(ik)
   integer, allocatable, save :: xk_equiv(:), xk_equiv_symmetry(:), xk_weight(:)
   real(dp) :: theta, rotation(3,3), inv_rotation(3,3), translation(3), diff, &
        arg, this_rotated_g(3), this_g(3), xk_crys(3), xk_irr_from_file(3), &
-       umklapp_Vector(3), xk_irr_from_file_cart(3), eigenvalues(nbnd)
+       umklapp_Vector(3), xk_irr_from_file_cart(3), eigenvalues(nbnd), degspin
   real(dp), allocatable, save :: g_global(:,:), xk_full_cart(:,:), &
        xk_full_cryst(:,:)
   real(dp), allocatable :: et_irr(:), rotated_g_global(:,:)
@@ -661,8 +661,13 @@ subroutine set_wavefunction_gauge(ik)
     if ( nbnd_ /= nbnd ) then      
       call errore("phoebe","scf and nscf run with different bands",nbnd_)
     end if
-    do ib = 1,max(nbnd-1,1)
-      ! I exclude the last band, because for empty states QE doesn't converge it well
+
+    degspin = 2.
+    IF (noncolin) degspin = 1.
+    IF (nspin /= 1)  degspin = 1.
+    do ib = 1,nint(nelec / degspin)
+      ! we only check fully occupied states,
+      ! because errors are larger for empty states
       if ( abs(et_irr(ib) - et(ib,ik)) > 1.0e-2 ) then
         print*, et_irr(:)
         print*, et(:,ik)
