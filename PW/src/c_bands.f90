@@ -95,6 +95,117 @@ end subroutine is_point_in_grid
 !
 !-----------------------------------------------------------------------------
 !
+subroutine reconstruct_irreducible_info(nk1, nk2, nk3, xk_full_cryst, nk_irr, xk_irr_cryst, &
+         equiv, equiv_symmetry, equiv_time_reversal, nsym, s)
+  use kinds, only: dp
+  use symm_base, only: t_rev, irt, time_reversal, sname
+  use mp_pools, only: intra_pool_comm, me_pool, root_pool, &
+       nproc_pool, my_pool_id, inter_pool_comm
+  implicit none
+  integer, intent(in) :: nk1, nk2, nk3, nk_irr, nsym
+  real(dp), intent(in) :: xk_irr_cryst(3,nk_irr)
+  real(dp), intent(inout) :: xk_full_cryst(3,nk1*nk2*nk3)
+  integer, intent(out) :: equiv(nk1*nk2*nk3), equiv_symmetry(nk1*nk2*nk3)
+  logical, intent(out) :: equiv_time_reversal(nk1*nk2*nk3)
+  real(dp), intent(in) :: s(3,3,48)
+  !
+  integer :: nk_full, n, i, j, k, ik, idx, nk, isym
+  real(dp) :: k_crystal(3), xkr(3)
+  logical :: in_the_list
+  !
+  nk_full = nk1*nk2*nk3
+  do i = 1,nk1
+    do j = 1,nk2
+      do k = 1,nk3
+        ! this is nothing but consecutive ordering
+        n = (k-1) + (j-1)*nk3 + (i-1)*nk2*nk3 + 1
+        !  xkg are the components of the complete grid in crystal axis
+        xk_full_cryst(1,n) = dble(i-1) / nk1
+        xk_full_cryst(2,n) = dble(j-1) / nk2
+        xk_full_cryst(3,n) = dble(k-1) / nk3
+        ! fold in 1st BZ
+        xk_full_cryst(:,n) = xk_full_cryst(:,n) - nint(xk_full_cryst(:,n))
+      end do
+    end do
+  end do
+  !
+  equiv_time_reversal(:) = .false.    
+  equiv = 0 ! unspecified
+  equiv_symmetry = 1 ! default is identity
+  !
+  ! now recognize the irreducible points in the list
+  do ik = 1,nk_irr
+    k_crystal(:) = xk_irr_cryst(:,ik)
+    i = mod ( nint ( k_crystal(1)*nk1 + 2*nk1), nk1 ) + 1
+    j = mod ( nint ( k_crystal(2)*nk2 + 2*nk2), nk2 ) + 1
+    k = mod ( nint ( k_crystal(3)*nk3 + 2*nk3), nk3 ) + 1
+    idx = (k-1) + (j-1)*nk3 + (i-1)*nk2*nk3 + 1
+    equiv(idx) = idx
+  end do
+  !
+  !
+  ! now fill the info for the reducible points
+  !
+  do nk = 1,nk_full
+    !  check if this k-point has already been found equivalent to another
+    if (equiv(nk) == nk) THEN ! irreducible point (the others are set to 0)
+      !  check if there are equivalent k-point to this in the list
+      !  (excepted those previously found to be equivalent to another)
+      !  check both k and -k
+      do isym = 1,nsym
+        do i = 1,3
+          xkr(i) = s(i,1,isym) * xk_full_cryst(1,nk) &
+                 + s(i,2,isym) * xk_full_cryst(2,nk) &
+                 + s(i,3,isym) * xk_full_cryst(3,nk)
+          xkr(i) = xkr(i) - nint( xkr(i) )
+        end do
+        if ( t_rev(isym) == 1 ) then
+          xkr = - xkr
+          call errore('kpoint_grid', "Phoebe didn't check t_rev(isym), contact developers", 1)
+          ! we didn't check magnetic systems!
+        end if
+        
+        call is_point_in_grid_private(in_the_list, xkr, nk1, nk2, nk3, 0, 0, 0, .false.)
+        !
+        if (in_the_list) THEN
+          
+          call find_index_in_full_list(n, xkr, nk1, nk2, nk3, .false.)
+
+          if ( equiv(n) == 0 ) then
+            equiv(n) = nk
+            equiv_time_reversal(n) = .false.
+            equiv_symmetry(n) = isym
+          end if
+        end if
+        !
+        if ( time_reversal ) then          
+          call is_point_in_grid_private(in_the_list, xkr, nk1, nk2, nk3, 0, 0, 0, .true.)
+          
+          if ( in_the_list ) then
+            
+            call find_index_in_full_list(n, xkr, nk1, nk2, nk3, .true.)
+            
+            if ( equiv(n) == 0 ) then
+              equiv(n) = nk
+              equiv_time_reversal(n) = .true.
+              equiv_symmetry(n) = isym
+            end if
+          end if
+        end if
+      end do
+    end if
+  end do
+  !
+  do nk = 1,nk_full
+    if ( equiv(nk) == 0 ) then
+      call errore("phoebe", "Failed reconstruction of irreducible wedge", 1)
+    end if
+  end do
+  !
+  return
+end subroutine reconstruct_irreducible_info
+
+
 subroutine find_irreducible_grid(nk1, nk2, nk3, k1, k2, k3, xkg, equiv, &
      wkk, equiv_symmetry, nsym, s, equiv_time_reversal)
   ! Returns:
@@ -273,7 +384,7 @@ subroutine set_wavefunction_gauge(ik)
   use parallel_include
   use input_parameters, only: calculation
   use mp_pools, only: intra_pool_comm, me_pool, root_pool, &
-       nproc_pool, my_pool_id, inter_pool_comm
+       nproc_pool, my_pool_id, inter_pool_comm, npool
   use mp, only: mp_bcast, mp_sum
   use mp_world, only: mpime
   use klist, only: igk_k, ngk, xk, nks, nelec
@@ -291,15 +402,15 @@ subroutine set_wavefunction_gauge(ik)
        num_local_plane_Waves,  i, j, ik_global, ngm_g_, degeneracy_group_counter, &
        ios, ik_irr, isym, nbnd_, ig_rotated, ig1, ig2, ig, ib1_, &
        degeneracy_group(nbnd), total_points
-  integer, save :: nk_full=0, nk1_, nk2_, nk3_, num_symmetries
+  integer, save :: nk_full=0, nk1_, nk2_, nk3_, num_symmetries, nk_irr
   integer, allocatable :: gmap(:)
   integer, allocatable, save :: xk_equiv(:), xk_equiv_symmetry(:), xk_weight(:)
   real(dp) :: theta, rotation(3,3), inv_rotation(3,3), translation(3), diff, &
        arg, this_rotated_g(3), this_g(3), xk_crys(3), xk_irr_from_file(3), &
        umklapp_Vector(3), xk_irr_from_file_cart(3), eigenvalues(nbnd), degspin
   real(dp), allocatable, save :: g_global(:,:), xk_full_cart(:,:), &
-       xk_full_cryst(:,:)
-  real(dp), allocatable :: et_irr(:), rotated_g_global(:,:)
+       xk_full_cryst(:,:), xk_irr_cryst(:,:)
+  real(dp), allocatable :: et_irr(:), rotated_g_global(:,:), xk_irr_cryst_temp(:,:)
   complex(dp) :: correction, xc, unitary_matrix(nbnd,nbnd), delta_matrix(nbnd,nbnd)
   complex(dp), allocatable :: gauge_coefficients(:), evc_collected(:), &
        phases(:), evc_irreducible(:), evc_rotated(:), evc_test(:)
@@ -310,7 +421,8 @@ subroutine set_wavefunction_gauge(ik)
   integer, parameter :: i_unit = 52
   real(dp), save :: rotations_crys(3,3,48)=0., rotations_cart(3,3,48)=0., fraction_trans(3,48)=0.
   logical, allocatable, save :: xk_equiv_time_reversal(:)
-  
+  integer, allocatable :: sizes(:)
+
   in_scf = (trim(calculation) == 'scf') ! .and. (restart) 
   in_nscf = (trim(calculation) == 'nscf') .or. (trim(calculation) == 'bands') &
        .or. (trim(calculation)=="none")
@@ -437,6 +549,39 @@ subroutine set_wavefunction_gauge(ik)
       rotations_cart = sr
       fraction_trans = ft
 
+
+
+
+      !
+      ! save on a list the irreducible wavevectors in crystal coords
+      allocate(xk_irr_cryst_temp(3,nks))
+      xk_irr_cryst_temp = xk
+      nk_irr = nks
+      do i=1,nks
+        call cryst_to_cart(1, xk_irr_cryst_temp(:,i), at, -1)
+      end do
+      ! note: if using pools, xk only contains the kpoints to be run in one pool
+      ! and we thus need to gather the results
+      ! note: initially, we were building the list of irreducible points in here
+      ! however, we now use QE's list of irr. vectors in order to use exactly
+      ! the same coordinates: QE's way of determining irr vectors is not easy
+      if (.true.) then
+        allocate(sizes(npool))
+        sizes = 0
+        sizes(my_pool_id+1) = nks
+        call mp_sum(nk_irr, inter_pool_comm)
+        call mp_sum(sizes, inter_pool_comm)
+        allocate(xk_irr_cryst(3,nk_irr))
+        xk_irr_cryst = 0.
+        do i = 1,nks
+          xk_irr_cryst(:,i+sum(sizes(1:my_pool_id))) = xk_irr_cryst_temp(:,i)
+        end do
+        call mp_sum(xk_irr_cryst, inter_pool_comm)
+        deallocate(sizes)
+        deallocate(xk_irr_cryst_temp)
+      end if      
+
+      !
       ! Save info on the G grid, to check that runs are consistent        
       if ( my_pool_id == 0 .and. me_pool == root_pool ) then
         file_name = trim(tmp_dir) // trim(prefix) // ".phoebe.scf.0000.dat"
@@ -452,15 +597,18 @@ subroutine set_wavefunction_gauge(ik)
              access = 'sequential', status = 'replace', iostat = ios)
         write(i_unit) ngm_g
         write(i_unit) nk1, nk2, nk3
+        write(i_unit) nk_irr
+        write(i_unit) xk_irr_cryst ! irreducible points in crystal coordinates
         ! Note: QE may change order of symmetries, e.g. when this is called by ph.x
         ! So, we must refer to our internal stuff 
         write(i_unit) num_symmetries
         write(i_unit) rotations_crys
         write(i_unit) rotations_cart
         write(i_unit) fraction_trans
-        close(i_unit) 
+        close(i_unit)
       end if
-
+      ! deallocate(xk_irr_cryst)
+      
     else
 
       num_symmetries = 0
@@ -485,6 +633,9 @@ subroutine set_wavefunction_gauge(ik)
         
         read(i_unit) ngm_g_ ! # of global G vectors
         read(i_unit) nk1_, nk2_, nk3_ ! kgrid mesh
+        read(i_unit) nk_irr
+        allocate(xk_irr_cryst(3,nk_irr))
+        read(i_unit) xk_irr_cryst
         ! I checked that g vectors are the same
         read(i_unit) num_symmetries
         read(i_unit) rotations_crys
@@ -502,6 +653,12 @@ subroutine set_wavefunction_gauge(ik)
       call mp_bcast(rotations_cart, root_pool, intra_pool_comm)
       call mp_bcast(fraction_trans, root_pool, intra_pool_comm)
 
+      call mp_bcast(nk_irr, root_pool, intra_pool_comm)
+      if ( me_pool /= root_pool ) then
+        allocate(xk_irr_cryst(3,nk_irr))
+      end if
+      call mp_bcast(xk_irr_cryst, root_pool, intra_pool_comm)
+      
       if ( ngm_g_ /= ngm_g ) then
         call errore("phoebe", "Different number of Gvectors in restart", 1)
       end if
@@ -528,12 +685,14 @@ subroutine set_wavefunction_gauge(ik)
     nk_full = nk1_*nk2_*nk3_ ! total # of reducible kpoints
     allocate(xk_full_cryst(3,nk_full))
     allocate(xk_equiv(nk_full))
-    allocate(xk_weight(nk_full))
+    ! allocate(xk_weight(nk_full))
     allocate(xk_equiv_symmetry(nk_full)) ! index of symmetry s.t. S(idx)*k^irr = k
     allocate(xk_equiv_time_reversal(nk_full)) ! whether to add time reversal to the symmetry operation
-    call find_irreducible_grid(nk1_, nk2_, nk3_, k1, k2, k3, xk_full_cryst, &
-         xk_equiv, xk_weight, xk_equiv_symmetry, num_symmetries, rotations_crys, &
-         xk_equiv_time_reversal)
+    !    call find_irreducible_grid(nk1_, nk2_, nk3_, k1, k2, k3, xk_full_cryst, &
+    !         xk_equiv, xk_weight, xk_equiv_symmetry, num_symmetries, rotations_crys, &
+    !         xk_equiv_time_reversal)
+    call reconstruct_irreducible_info(nk1_, nk2_, nk3_, xk_full_cryst, nk_irr, xk_irr_cryst, &
+         xk_equiv, xk_equiv_symmetry, xk_equiv_time_reversal, num_symmetries, rotations_crys)
     
     allocate(xk_full_cart(3,nk_full)) ! same as xk_full_cryst, but in cartesian coords
     xk_full_cart = xk_full_cryst
