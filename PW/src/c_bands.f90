@@ -146,9 +146,9 @@ subroutine reconstruct_irreducible_info(nk1, nk2, nk3, xk_full_cryst, nk_irr, xk
   !
   ! now fill the info for the reducible points
   !
-  do nk = 1,nk_full
+  ik_full_loop : do nk = 1,nk_full
     !  check if this k-point has already been found equivalent to another
-    if (equiv(nk) == nk) THEN ! irreducible point (the others are set to 0)
+    if (equiv(nk) == 0) THEN ! irreducible point (the others are set to 0)
       !  check if there are equivalent k-point to this in the list
       !  (excepted those previously found to be equivalent to another)
       !  check both k and -k
@@ -171,10 +171,11 @@ subroutine reconstruct_irreducible_info(nk1, nk2, nk3, xk_full_cryst, nk_irr, xk
           
           call find_index_in_full_list(n, xkr, nk1, nk2, nk3, .false.)
 
-          if ( equiv(n) == 0 ) then
-            equiv(n) = nk
-            equiv_time_reversal(n) = .false.
-            equiv_symmetry(n) = isym
+          if ( equiv(n) == n ) then
+            equiv(nk) = n
+            equiv_time_reversal(nk) = .false.
+            equiv_symmetry(nk) = isym
+            cycle ik_full_loop
           end if
         end if
         !
@@ -185,16 +186,18 @@ subroutine reconstruct_irreducible_info(nk1, nk2, nk3, xk_full_cryst, nk_irr, xk
             
             call find_index_in_full_list(n, xkr, nk1, nk2, nk3, .true.)
             
-            if ( equiv(n) == 0 ) then
-              equiv(n) = nk
-              equiv_time_reversal(n) = .true.
-              equiv_symmetry(n) = isym
+            if ( equiv(n) == n ) then
+              equiv(nk) = n
+              equiv_time_reversal(nk) = .true.
+              equiv_symmetry(nk) = isym
+              cycle ik_full_loop
             end if
           end if
         end if
       end do
     end if
-  end do
+  end do ik_full_loop
+
   !
   do nk = 1,nk_full
     if ( equiv(nk) == 0 ) then
@@ -643,11 +646,11 @@ subroutine set_wavefunction_gauge(ik)
         read(i_unit) fraction_trans
         close(i_unit) 
       end if
+
       call mp_bcast(nk1_, root_pool, intra_pool_comm)
       call mp_bcast(nk2_, root_pool, intra_pool_comm)
       call mp_bcast(nk3_, root_pool, intra_pool_comm)
       call mp_bcast(ngm_g_, root_pool, intra_pool_comm)
-
       call mp_bcast(num_symmetries, root_pool, intra_pool_comm)
       call mp_bcast(rotations_crys, root_pool, intra_pool_comm)
       call mp_bcast(rotations_cart, root_pool, intra_pool_comm)
@@ -768,7 +771,7 @@ subroutine set_wavefunction_gauge(ik)
     ! in the list of irreducible points
 
     ik_irr = xk_equiv(ik_global)
-
+    
     isym = xk_equiv_symmetry(ik_global)
     add_time_reversal = xk_equiv_time_reversal(ik_global)
     
