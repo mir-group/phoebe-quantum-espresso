@@ -7,11 +7,10 @@
 !----------------------------------------------------------------------------
 MODULE qexsd_copy
   !----------------------------------------------------------------------------
+  !! This module contains some common subroutines used to copy data read from
+  !! XML format into data used by the Quantum ESPRESSO package.
   !
-  ! This module contains some common subroutines used to copy data read from
-  ! XML format into data used by the Quantum ESPRESSO package.
-  !
-  ! Written by Paolo Giannozzi, building upon pre-existing code
+  !! Written by Paolo Giannozzi, building upon pre-existing code.
   !
   USE kinds, ONLY : dp
   IMPLICIT NONE
@@ -206,7 +205,7 @@ CONTAINS
   END SUBROUTINE qexsd_copy_atomic_structure
   !
   !------------------------------------------------------------------------
-  SUBROUTINE qexsd_copy_symmetry ( symms_obj, &
+  SUBROUTINE qexsd_copy_symmetry ( symms_obj, spacegroup, &
        nsym, nrot, s, ft, sname, t_rev, invsym, irt, &
        noinv, nosym, no_t_rev, flags_obj )
     !------------------------------------------------------------------------
@@ -217,6 +216,7 @@ CONTAINS
     ! 
     TYPE ( symmetries_type )             :: symms_obj 
     TYPE (symmetry_flags_type), OPTIONAL :: flags_obj
+    INTEGER, INTENT(OUT) :: spacegroup
     INTEGER, INTENT(OUT) :: nrot
     INTEGER, INTENT(OUT) :: nsym
     INTEGER, INTENT(OUT) :: s(:,:,:)
@@ -240,6 +240,7 @@ CONTAINS
        no_t_rev=.FALSE.
     ENDIF
     !
+    spacegroup = symms_obj%space_group
     nrot = symms_obj%nrot 
     nsym = symms_obj%nsym
     !  
@@ -745,8 +746,18 @@ CONTAINS
       lsda  =   magnetization_obj%lsda
       noncolin = magnetization_obj%noncolin  
       lspinorb = magnetization_obj%spinorbit 
-      domag =   magnetization_obj%do_magnetization 
-      tot_magnetization = magnetization_obj%total
+      IF (magnetization_obj%do_magnetization_ispresent) THEN 
+        domag =   magnetization_obj%do_magnetization
+      ELSE 
+        domag = .FALSE.
+      END IF
+      IF (magnetization_obj%total_ispresent) THEN 
+        tot_magnetization = magnetization_obj%total
+      ELSE IF (magnetization_obj%total_vec_ispresent) THEN 
+        tot_magnetization = SQRT(dot_product(magnetization_obj%total_vec, magnetization_obj%total_vec))
+      ELSE 
+        tot_magnetization = 0._DP 
+      END IF 
       !
     END SUBROUTINE qexsd_copy_magnetization
     !-----------------------------------------------------------------------
@@ -770,7 +781,11 @@ CONTAINS
        !
        occupations = TRIM ( band_struct_obj%occupations_kind%occupations ) 
        smearing    = TRIM ( band_struct_obj%smearing%smearing ) 
-       degauss     = band_struct_obj%smearing%degauss
+       IF (band_struct_obj%smearing%degauss_ispresent) THEN 
+         degauss     = band_struct_obj%smearing%degauss
+       ELSE 
+         degauss = 0._DP
+       END IF 
        !   
        IF ( band_struct_obj%starting_k_points%monkhorst_pack_ispresent ) THEN 
           nks_start = 0 

@@ -26,14 +26,15 @@ default :
 	@echo '  pp           postprocessing programs'
 	@echo '  pwall        same as "make pw ph pp pwcond neb"'
 	@echo '  cp           CP code: Car-Parrinello molecular dynamics'
+	@echo '  all_currents QEHeat code: energy flux and charge current'
 	@echo '  tddfpt       time dependent dft code'
 	@echo '  gwl          GW with Lanczos chains'
 	@echo '  ld1          utilities for pseudopotential generation'
 	@echo '  xspectra     X-ray core-hole spectroscopy calculations'
 	@echo '  couple       Library interface for coupling to external codes'
-	@echo '  epw          Electron-Phonon Coupling with wannier functions'
+	@echo '  epw          Electron-Phonon Coupling with Wannier functions'
 	@echo '  gui          Graphical User Interface'
-	@echo '  all          same as "make pwall cp ld1 tddfpt hp"'
+	@echo '  all          same as "make pwall cp ld1 tddfpt xspectra hp"'
 	@echo ' '
 	@echo 'where target identifies one or multiple THIRD-PARTIES PACKAGES:'
 	@echo '  gipaw        NMR and EPR spectra'
@@ -45,7 +46,10 @@ default :
 	@echo 'where target is one of the following suite operation:'
 	@echo '  doc          build documentation'
 	@echo '  links        create links to all executables in bin/'
+	@echo '  install      copy all executables to PREFIX/bin/'
+	@echo '               (works with "configure --prefix=PREFIX)"'
 	@echo '  tar          create a tarball of the source tree'
+	@echo '  depend       generate dependencies (make.depend files)'
 	@if test -d GUI/; then \
 		echo '  tar-gui      create a standalone PWgui tarball from the GUI sources'; \
 		echo '  tar-qe-modes create a tarball for QE-modes (Emacs major modes for Quantum ESPRESSO)'; fi
@@ -66,7 +70,7 @@ pw : pwlibs
 	if test -d PW ; then \
 	( cd PW ; $(MAKE) TLDEPS= all || exit 1) ; fi
 
-cp : bindir libs mods
+cp : bindir mods
 	if test -d CPV ; then \
 	( cd CPV ; $(MAKE) TLDEPS= all || exit 1) ; fi
 
@@ -108,7 +112,7 @@ gipaw : pwlibs
 d3q : phlibs
 	( cd install ; $(MAKE) -f plugins_makefile $@ || exit 1 )
 
-ld1 : bindir libs mods
+ld1 : bindir mods
 	if test -d atomic ; then \
 	( cd atomic ; $(MAKE) TLDEPS= all || exit 1 ) ; fi
 
@@ -124,6 +128,10 @@ epw: phlibs
 	if test -d EPW ; then \
 	( cd EPW ; $(MAKE) all || exit 1; \
 		cd ../bin; ln -fs ../EPW/bin/epw.x . ); fi
+
+all_currents:
+	if test -d QEHeat ; then \
+	( cd QEHeat ; $(MAKE) all || exit 1; ) ; fi
 
 travis : pwall epw
 	if test -d test-suite ; then \
@@ -155,7 +163,7 @@ all   : pwall cp ld1 tddfpt hp xspectra gwl
 # compile modules, libraries, directory for binaries, etc
 ###########################################################
 
-pwlibs: bindir libs mods libks_solvers dftd3
+pwlibs: bindir mods libks_solvers dftd3
 	if test -d PW ; then \
 	( cd PW ; $(MAKE) pw-lib || exit 1) ; fi
 
@@ -175,10 +183,10 @@ pw4gwwlib : phlibs
 	if test -d GWW ; then \
 	( cd GWW ; $(MAKE) pw4gwwa || exit 1 ) ; fi
 
-mods : libfox libutil libla libfft libupf libbeef
+mods : libfox libutil libla libfft libupf libmbd librxc
 	( cd Modules ; $(MAKE) TLDEPS= all || exit 1 )
 
-libks_solvers : libs libutil libla
+libks_solvers : libutil libla
 	( cd KS_Solvers ; $(MAKE) TLDEPS= all || exit 1 )
 
 libla : liblapack libutil libcuda
@@ -187,14 +195,14 @@ libla : liblapack libutil libcuda
 libfft : 
 	( cd FFTXlib ; $(MAKE) TLDEPS= all || exit 1 )
 
+librxc : 
+	( cd XClib ; $(MAKE) TLDEPS= all || exit 1 )
+
 libutil : 
 	( cd UtilXlib ; $(MAKE) TLDEPS= all || exit 1 )
 
-libupf : libfox libutil
+libupf : libutil libcuda
 	( cd upflib ; $(MAKE) TLDEPS= all || exit 1 )
-
-libs :
-	( cd clib ; $(MAKE) TLDEPS= all || exit 1 )
 
 lrmods : mods pwlibs
 	( cd LR_Modules ; $(MAKE) TLDEPS= all || exit 1 )
@@ -218,7 +226,7 @@ libfox:
 libcuda: 
 	cd install ; $(MAKE) -f extlibs_makefile $@
 
-libbeef:
+libmbd:
 	cd install ; $(MAKE) -f extlibs_makefile $@
 
 #########################################################
@@ -274,10 +282,11 @@ install :
 clean : 
 	touch make.inc 
 	for dir in \
-		CPV LAXlib FFTXlib UtilXlib upflib Modules PP PW EPW KS_Solvers \
+		CPV LAXlib FFTXlib XClib UtilXlib upflib Modules PP PW EPW KS_Solvers \
 		NEB ACFDT COUPLE GWW XSpectra PWCOND dft-d3 \
-		atomic clib LR_Modules pwtools upflib \
+		atomic LR_Modules upflib \
 		dev-tools extlibs Environ TDDFPT PHonon HP GWW Doc GUI \
+		QEHeat \
 	; do \
 	    if test -d $$dir ; then \
 		( cd $$dir ; \
@@ -298,6 +307,7 @@ veryclean : clean
 	- rm -f espresso.tar.gz
 	- rm -rf make.inc
 	- rm -rf FoX
+	- rm -rf MBD 
 # remove everything not in the original distribution
 distclean : veryclean
 	- cd pseudo; ./clean_ps ; cd -
@@ -343,10 +353,10 @@ tar-qe-modes :
 # "latex2html" and "convert" (from Image-Magick) are needed.
 doc : 
 	if test -d Doc ; then \
-	( cd Doc ; $(MAKE) VERSION=6.6 TLDEPS= all ) ; fi
+	( cd Doc ; $(MAKE) TLDEPS= all ) ; fi
 	for dir in */Doc; do \
 	( if test -f $$dir/Makefile ; then \
-	( cd $$dir; $(MAKE) VERSION=6.6 TLDEPS= all ) ; fi ) ;  done
+	( cd $$dir; $(MAKE) TLDEPS= all ) ; fi ) ;  done
 
 doc_clean :
 	if test -d Doc ; then \

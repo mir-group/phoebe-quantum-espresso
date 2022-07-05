@@ -1,5 +1,5 @@
 !
-! Copyright (C) 2020 Quantum ESPRESSO group
+! Copyright (C) 2020-2021 Quantum ESPRESSO group
 ! This file is distributed under the terms of the
 ! GNU General Public License. See the file `License'
 ! in the root directory of the present distribution,
@@ -10,7 +10,7 @@ MODULE xmltools
   !--------------------------------------------------------
   !
   ! Poor-man set of tools for reading and writing xml files
-  ! Similar to iotk but much simpler - Paolo Giannozzi, June 2020 
+  ! Similar to iotk but much simpler - Paolo Giannozzi, June 2020
   ! Limitations: too many to be listed in detail. Main ones:
   ! * works on a single opened file at the time. Exception:
   !   while a file is opened, one can open, R/W, close another file,
@@ -24,6 +24,8 @@ MODULE xmltools
   !   tag is found only above the current position, and nowhere else
   ! * only single values (e.g. no vectors) in attributes
   ! * attributes should not contain commas or strange characters
+  ! * xml comments (<!-- ...  -->) or <![CDATA[ ... ]]> cannot be mixed
+  !   with numerical fields
   !
   USE upf_kinds, ONLY : dp
   IMPLICIT NONE
@@ -50,7 +52,7 @@ MODULE xmltools
   INTEGER :: nattr
   CHARACTER(LEN=:), ALLOCATABLE :: attrlist
   !
-  ! variables used keep track of open tags
+  ! variables used to keep track of open tags
   !
   INTEGER :: nlevel = -1
   INTEGER, PARAMETER :: maxlength=80, maxlevel=9
@@ -58,7 +60,7 @@ MODULE xmltools
   !
   PRIVATE
   ! general subroutines
-  PUBLIC :: xml_openfile, xml_closefile
+  PUBLIC :: xml_open_file, xml_closefile
   ! subroutines for writing
   PUBLIC :: add_attr
   PUBLIC :: xmlw_writetag, xmlw_opentag, xmlw_closetag
@@ -68,10 +70,25 @@ MODULE xmltools
   ! utility functions
   PUBLIC :: xml_protect, i2c, l2c, r2c
   !
+  ! Error codes returned by xmlr_opentag / xml_readtag:
+  !  -1   tag with no value (e.g. <tag attr="val"/>) found (no error)
+  !   0   tag found and read (no error)
+  !   1   tag not found
+  !   2   error parsing file
+  !   3   line too long
+  !   4   too many levels of tags
+  ! 
+  ! Error codes returned by xmlw_opentag / xml_writetag:
+  !   0     tag open and/or written (no error)
+  !   1     cannot write to unit "xmlunit"
+  !   2     tag name too long
+  !   3     wrong number of values for attributes
+  !   4     too many levels of tag
+  ! 
   INTERFACE xmlr_readtag
      MODULE PROCEDURE readtag_c, readtag_r, readtag_l, readtag_i, &
           readtag_iv, readtag_rv, readtag_rm, readtag_rt, &
-          readtag_zv, readtag_zm
+          readtag_zv, readtag_zm, readtag_zt
   END INTERFACE xmlr_readtag
   !
   ! IMPORTANT NOTICE: complex numbers, z=a+ib, are written as two reals:
@@ -81,7 +98,7 @@ MODULE xmltools
   INTERFACE xmlw_writetag
      MODULE PROCEDURE writetag_c, writetag_r, writetag_l, writetag_i, &
           writetag_iv, writetag_rv, writetag_rm, writetag_rt, &
-          writetag_zv, writetag_zm
+          writetag_zv, writetag_zm, writetag_zt
   END INTERFACE xmlw_writetag
   !
   INTERFACE get_attr
@@ -245,7 +262,7 @@ CONTAINS
     !
   END SUBROUTINE add_c_attr
   !
-  FUNCTION xml_openfile ( filexml ) RESULT (iun)
+  FUNCTION xml_open_file ( filexml ) RESULT (iun)
     !
     ! returns on output the opened unit number if opened successfully
     ! returns -1 otherwise
@@ -272,7 +289,7 @@ CONTAINS
     print "('file ',a,' opened with unit ',i5)",trim(filexml),iun
 #endif
     !
-  END FUNCTION xml_openfile
+  END FUNCTION xml_open_file
   !
   SUBROUTINE xml_closefile ( )
     !
@@ -294,13 +311,8 @@ CONTAINS
     ! name      required, character: tag name
     ! On output: the tag is left open, ready for addition of data -
     !            the tag must be subsequently closed with close_xml_tag
-    ! If ierr is present, the following value is returned:
-    ! ierr = 0     normal execution
-    ! ierr = 1     cannot write to unit "xmlunit"
-    ! ierr = 2     tag name too long
-    ! ierr = 3     too many tag levels
-    ! ierr =10     wrong number of values for attributes
-    ! If absent, the above error messages are printed.
+    ! If ierr is present, the error code set in write_tag_and_attr is returned
+    ! If ierr is absent,  the above error code is reprinted on output
     !
     CHARACTER(LEN=*), INTENT(IN) :: name
     INTEGER, INTENT(OUT),OPTIONAL :: ierr
@@ -517,10 +529,33 @@ CONTAINS
     !
   END SUBROUTINE writetag_zm
   !
+  SUBROUTINE writetag_zt (name, ztens, ierr )
+    !
+    ! As writetag_c for a matrix of complex values - see comments in writetag_zv
+    !
+    USE iso_c_binding
+    CHARACTER(LEN=*), INTENT(IN) :: name
+    COMPLEX(dp), INTENT(IN), TARGET:: ztens(:,:,:)
+    INTEGER, INTENT(OUT), OPTIONAL :: ierr
+    !
+    TYPE (c_ptr) :: cp
+    REAL(dp), POINTER  :: rtens(:,:,:)
+    !
+    NULLIFY (rtens)
+    cp = c_loc(ztens)
+    CALL c_f_pointer (cp, rtens, shape(ztens)*[2,1,1])
+    !
+    CALL xmlw_opentag (name, ierr )
+    WRITE( xmlunit, '(2es24.15)') rtens
+    CALL xmlw_closetag ( )
+    !
+  END SUBROUTINE writetag_zt
+  !
   FUNCTION write_tag_and_attr (name) RESULT (ierr)
     !
     CHARACTER(LEN=*), INTENT(IN) :: name
     INTEGER :: ierr
+    ! See list of error codes in the header of this file
     !
     LOGICAL :: have_list, have_vals
     INTEGER :: i, la, lv, n1a,n2a, n1v, n2v
@@ -531,7 +566,7 @@ CONTAINS
     END IF
     !
     IF ( nlevel+1 > maxlevel ) THEN
-       ierr = 3
+       ierr = 4
        RETURN
     END IF
     nlevel = nlevel+1
@@ -550,7 +585,7 @@ CONTAINS
     !
     ! attributes (if present)
     !
-    ierr = 10
+    ierr = 3
     if ( allocated (attrlist) ) then
        WRITE (xmlunit, "(A)", ADVANCE='no', ERR=10) attrlist
        deallocate (attrlist)
@@ -860,6 +895,32 @@ CONTAINS
     !
   END SUBROUTINE readtag_zm
     !
+  SUBROUTINE readtag_zt (name, ztens, ierr)
+    !
+    ! As readtag_c, for a matrix of complex values - see comments in writetag_zv
+    !
+    USE iso_c_binding
+    CHARACTER(LEN=*), INTENT(IN) :: name
+    COMPLEX(dp), INTENT(OUT), target     :: ztens(:,:,:)
+    INTEGER, INTENT(OUT),OPTIONAL :: ierr
+    TYPE (c_ptr) :: cp
+    REAL(dp), POINTER  :: rtens(:,:,:)
+    INTEGER :: ier_
+    !
+    CALL xmlr_opentag (name, ier_)
+    if ( ier_ == 0  ) then
+       NULLIFY (rtens)
+       cp = c_loc(ztens)
+       CALL c_f_pointer (cp, rtens, shape(ztens)*[2,1,1])
+       READ(xmlunit, *) rtens
+       CALL xmlr_closetag ( )
+    else
+       ztens = 0.0_dp
+    end if
+    IF ( present (ierr) ) ierr = ier_
+    !
+  END SUBROUTINE readtag_zt
+    !
   subroutine readtag_c ( tag, cval, ierr)
     !
     implicit none
@@ -867,10 +928,6 @@ CONTAINS
     character(len=*), intent(in) :: tag
     character(len=*), intent(out):: cval
     integer, intent(out), optional :: ierr
-    ! 0: tag found and read
-    !-1: tag not found
-    ! 1: error parsing file
-    ! 2: error in arguments
     !
     integer ::  i, j, lt, ll
     character(len=1) :: endtag
@@ -879,8 +936,11 @@ CONTAINS
     !
     cval = ''
     if ( eot < 0 ) then
-       ! print *, 'end of file reached, tag not found'
-       if ( present(ierr) ) ierr =-1
+       if ( .not. present(ierr) ) then
+          print *, 'end of file reached, tag not found'
+       else
+          ierr = 1
+       end if
        return
     else if ( eot == 0 ) then
        ! print *, 'tag found, no value to read on line'
@@ -905,8 +965,11 @@ CONTAINS
              lt = len_trim(tag)
              endtag = adjustl( line(j+i+1+lt:) )
              if ( endtag /= '>' ) then
-                ! print *, 'tag ',trim(tag),' not correctly closed'
-                if (present(ierr)) ierr = 1
+                if ( .not.present(ierr)) then
+                   print *, 'tag ',trim(tag),' not correctly closed'
+                else
+                   ierr = 2
+                endif
              else
                 ! end of tag found, read value (if any) and exit
                 if ( i > 1 ) cval = trim(cval) // adjustl(trim(line(j:j+i-2)))
@@ -940,16 +1003,11 @@ CONTAINS
     !
     character(len=*), intent(in) :: tag
     integer, intent(out), optional :: ierr
-    ! 0: tag found and read
-    !-1: tag not found
-    ! 1: error parsing file
-    ! 2: line too long
-    ! 3: too many levels of tags
-    !
+    ! See list of error codes in the header of this file
     integer :: stat, ntry, ll, lt, i, j, j0
+    ! stat=-1: in comment (not actually used)
     ! stat= 0: begin
-    ! stat=-1: in comment
-    ! stat=1 : tag found
+    ! stat= 1: tag found
     !
     character(len=1) :: quote
     !
@@ -966,7 +1024,7 @@ CONTAINS
        ll = len_trim(line)
        if ( ll == maxline ) then
           print *, 'xmlr_opentag: severe error, line too long'
-          if (present(ierr)) ierr = 2
+          if (present(ierr)) ierr = 3
           return
        end if
        ! j is the current scan position
@@ -975,20 +1033,20 @@ CONTAINS
        j0 = 1
        parse: do while ( j <= ll )
           !
-          if ( stat ==-1 ) then
-             !
-             ! scanning a comment
-             i = index(line(j:),'-->')
-             if ( i == 0 ) then
-                ! no end of comment found on this line
-                exit parse
-             else
-                ! end of comment found
-                stat = 0
-                j = j+i+3
-             end if
-             !
-          else if ( stat == 0 ) then
+          ! following case is never set and unnecessary:
+          !if ( stat ==-1 ) then
+          !   ! scanning a comment
+          !   i = index(line(j:),'-->')
+          !   if ( i == 0 ) then
+          !      ! no end of comment found on this line
+          !      exit parse
+          !   else
+          !      ! end of comment found
+          !      stat = 0
+          !      j = j+i+3
+          !   end if
+          !else if ( stat == 0 ) then
+          if ( stat == 0 ) then
              !
              ! searching for tag
              !
@@ -1019,7 +1077,7 @@ CONTAINS
                 j0= j
              else if ( line(j:j+1) == '/>' ) then
                 ! <tag ... /> found : return
-                if (present(ierr)) ierr = 0
+                if (present(ierr)) ierr =-1
                 ! eot = 0: tag with no value found
                 eot = 0
                 !
@@ -1033,7 +1091,7 @@ CONTAINS
                 nlevel = nlevel+1
                 IF ( nlevel > maxlevel ) THEN
                    print *, 'xmlr_opentag: severe error, too many levels'
-                   if (present(ierr)) ierr = 3
+                   if (present(ierr)) ierr = 4
                 else
                    open_tags(nlevel) = trim(tag)
 #if defined ( __debug )
@@ -1080,7 +1138,7 @@ CONTAINS
     !
 10  if ( stat == 0 ) then
        if ( present(ierr) ) then
-          ierr =-1
+          ierr = 1
           ! quick-and-dirty pseudo-fix to deal with tags not found:
           ! rewind and try again - will work if the desired tag is
           ! found above the current position (and nowhere else)
@@ -1091,7 +1149,7 @@ CONTAINS
        end if
     else
        print *, 'xmlr_opentag: severe parsing error'
-       if ( present(ierr) ) ierr = 1
+       if ( present(ierr) ) ierr = 2
     end if
     !
   end subroutine xmlr_opentag
@@ -1107,7 +1165,7 @@ CONTAINS
     ! 2: error parsing file
     !
     integer :: stat, ll, lt, i, j
-    ! stat=-1: in comment
+    ! stat=-1: in comment (not actually used)
     ! stat= 0: begin
     ! stat= 1: end
     !
@@ -1127,27 +1185,27 @@ CONTAINS
        ll = len_trim(line)
        if ( ll == maxline ) then
           print *, 'Fatal error: line too long'
-          if (present(ierr)) ierr = 1
+          if (present(ierr)) ierr = 2
           return
        end if
        ! j is the current scan position
        j = 1
        parse: do while ( j <= ll )
           !
-          if ( stat ==-1 ) then
-             !
-             ! scanning a comment
-             i = index(line(j:),'-->')
-             if ( i == 0 ) then
-                ! no end of comment found on this line
-                exit parse
-             else
-                ! end of comment found
-                stat = 0
-                j = j+i+3
-             end if
-             !
-          else if ( stat == 0 ) then
+          ! following case is never set and unnecessary:
+          !if ( stat ==-1 ) then
+          ! scanning a comment
+          !   i = index(line(j:),'-->')
+          !   if ( i == 0 ) then
+          ! no end of comment found on this line
+          !      exit parse
+          !   else
+          ! end of comment found
+          !      stat = 0
+          !      j = j+i+3
+          !   end if
+          !else if ( stat == 0 ) then
+          if ( stat == 0 ) then
              !
              ! searching for closing tag
              !

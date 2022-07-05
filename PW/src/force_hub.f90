@@ -38,7 +38,7 @@ SUBROUTINE force_hub( forceh )
    USE mp,                   ONLY : mp_sum
    USE becmod,               ONLY : bec_type, becp, calbec, allocate_bec_type, &
                                     deallocate_bec_type
-   USE uspp,                 ONLY : nkb, vkb, indv_ijkb0
+   USE uspp,                 ONLY : nkb, vkb, ofsbeta
    USE uspp_param,           ONLY : nh
    USE wavefunctions,        ONLY : evc
    USE klist,                ONLY : nks, xk, ngk, igk_k
@@ -47,6 +47,9 @@ SUBROUTINE force_hub( forceh )
    USE mp_bands,             ONLY : use_bgrp_in_hpsi
    USE noncollin_module,     ONLY : noncolin
    USE force_mod,            ONLY : eigenval, eigenvect, overlap_inv
+   USE wavefunctions_gpum,   ONLY : using_evc
+   USE becmod_subs_gpum,     ONLY : using_becp_auto
+   USE uspp_init,            ONLY : init_us_2
    !
    IMPLICIT NONE
    !
@@ -121,20 +124,24 @@ SUBROUTINE force_hub( forceh )
    !
    !    we start a loop on k points
    !
+   CALL using_evc(0)
    DO ik = 1, nks
       !
       IF (lsda) current_spin = isk(ik)
       npw = ngk(ik)
       !
+      IF (nks > 1)  CALL using_evc(2)
       IF (nks > 1) &
          CALL get_buffer( evc, nwordwfc, iunwfc, ik )
       !
       CALL init_us_2( npw, igk_k(1,ik), xk(1,ik), vkb )
       ! Compute spsi = S * psi
       CALL allocate_bec_type ( nkb, nbnd, becp)
+      CALL using_becp_auto(2)
       CALL calbec( npw, vkb, evc, becp )
       CALL s_psi( npwx, npw, nbnd, evc, spsi )
       CALL deallocate_bec_type (becp) 
+      CALL using_becp_auto(2)
       !
       ! Set up various quantities, in particular wfcU which 
       ! contains Hubbard-U (ortho-)atomic wavefunctions (without ultrasoft S)
@@ -147,7 +154,7 @@ SUBROUTINE force_hub( forceh )
       !
       DO alpha = 1, nat  ! forces are calculated by displacing atom alpha ...
          !
-         ijkb0 = indv_ijkb0(alpha) ! positions of beta functions for atom alpha
+         ijkb0 = ofsbeta(alpha) ! positions of beta functions for atom alpha
          !
          IF (lda_plus_u_kind.EQ.0) THEN
             !
@@ -1015,6 +1022,7 @@ SUBROUTINE dprojdtau_k( spsi, alpha, na, ijkb0, ipol, ik, nb_s, nb_e, mykey, dpr
    USE mp,                   ONLY : mp_sum
    USE basis,                ONLY : natomwfc, wfcatom, swfcatom
    USE force_mod,            ONLY : eigenval, eigenvect, overlap_inv, doverlap_inv
+   USE wavefunctions_gpum,   ONLY : using_evc
    !
    IMPLICIT NONE
    !
@@ -1210,7 +1218,7 @@ SUBROUTINE dprojdtau_k( spsi, alpha, na, ijkb0, ipol, ik, nb_s, nb_e, mykey, dpr
       DEALLOCATE (dwfc)
       !
    ENDIF
-   ! 
+   !
    CALL stop_clock('dprojdtau')
    !
    RETURN
@@ -1375,6 +1383,7 @@ SUBROUTINE matrix_element_of_dSdtau (alpha, ipol, ik, ijkb0, lA, A, lB, B, A_dS_
    USE klist,                ONLY : igk_k, ngk
    USE wavefunctions,        ONLY : evc
    USE becmod,               ONLY : calbec
+   USE wavefunctions_gpum,   ONLY : using_evc
    !
    IMPLICIT NONE
    !
@@ -1418,6 +1427,7 @@ SUBROUTINE matrix_element_of_dSdtau (alpha, ipol, ik, ijkb0, lA, A, lB, B, A_dS_
    ! aux is used as a workspace
    ALLOCATE ( aux(npwx,nh(nt)) )
    aux(:,:) = (0.0d0, 0.0d0)
+   !
    !
 !!omp parallel do default(shared) private(ig,ih)
    ! Beta function
@@ -1522,6 +1532,7 @@ SUBROUTINE dprojdtau_gamma( spsi, alpha, ijkb0, ipol, ik, nb_s, nb_e, &
    USE mp_bands,             ONLY : intra_bgrp_comm
    USE mp_pools,             ONLY : intra_pool_comm, me_pool, nproc_pool
    USE mp,                   ONLY : mp_sum
+   USE wavefunctions_gpum,   ONLY : using_evc
    !
    IMPLICIT NONE
    !
@@ -1655,6 +1666,7 @@ SUBROUTINE dprojdtau_gamma( spsi, alpha, ijkb0, ipol, ik, nb_s, nb_e, &
 ! !omp end parallel do
    !
    CALL calbec( npw, wfcU, dbeta, wfatbeta ) 
+   CALL using_evc(0)
    CALL calbec( npw, dbeta, evc, betapsi0 )
    !
 ! !omp parallel do default(shared) private(ih,ig,gvec)
@@ -1666,6 +1678,7 @@ SUBROUTINE dprojdtau_gamma( spsi, alpha, ijkb0, ipol, ik, nb_s, nb_e, &
    ENDDO
 ! !omp end parallel do
    !
+   CALL using_evc(0)
    CALL calbec( npw, dbeta, evc, dbetapsi ) 
    CALL calbec( npw, wfcU, dbeta, wfatdbeta ) 
    DEALLOCATE( dbeta )
