@@ -376,7 +376,7 @@ subroutine set_wavefunction_gauge(ik)
   !          note that, even in serial, ngm_g>>ngk(ik), for reasons
   
   use gvect, only: gstart, g, ig_l2g, ngm, ngm_g, mill_g
-  use wavefunctions, only: evc ! plane wave coefficients, evc(npwx*npol,nbnd)
+  use wavefunctions, only: evc, psic ! plane wave coefficients, evc(npwx*npol,nbnd)
   use wvfct, only: et, & ! eigenvalues of the Hamiltonian et(nbnd,nkstot)
        nbnd, & ! number of bands
        npwx, & ! maximum number of PW for wavefunctions
@@ -398,6 +398,9 @@ subroutine set_wavefunction_gauge(ik)
   use control_flags, only: restart
   use lsda_mod, only: nspin
   use noncollin_module, only: noncolin
+  USE fft_base,        ONLY : dffts
+  USE fft_interfaces,  ONLY : fwfft, invfft
+  USE scatter_mod, ONLY : gather_grid, scatter_grid
   implicit none
   integer, intent(in) :: ik
   !
@@ -418,14 +421,23 @@ subroutine set_wavefunction_gauge(ik)
   complex(dp), allocatable :: gauge_coefficients(:), evc_collected(:), &
        phases(:), evc_irreducible(:), evc_rotated(:), evc_test(:)
   character(len=64) :: file_name
-  character(len=4) :: ichar
+  character(len=4) :: ichar, jchar
   logical, save :: first = .true.
   logical :: any_prob, in_scf, in_nscf, add_time_reversal, file_exists
   integer, parameter :: i_unit = 52
   real(dp), save :: rotations_crys(3,3,48)=0., rotations_cart(3,3,48)=0., fraction_trans(3,48)=0.
   logical, allocatable, save :: xk_equiv_time_reversal(:)
-  integer, allocatable :: sizes(:)
-
+  integer, allocatable :: sizes(:), rir(:,:), igk_k_irr(:)
+  COMPLEX(DP), ALLOCATABLE :: psic_all(:), temppsic_all(:), phase(:)
+  integer :: ss(3,3), ri, rj, rk, k, iks2g, ir, nr1, nr2, nr3, &
+       nr1x, nr2x, nr3x, nxxs
+  
+!#if defined(__MPI)
+!   INTEGER :: nxxs
+!   COMPLEX(DP),ALLOCATABLE :: psic_all(:,:)
+!   nxxs = dffts%nr1x * dffts%nr2x * dffts%nr3x
+!   ALLOCATE(psic_all(nxxs, 2) )
+!#endif
   in_scf = (trim(calculation) == 'scf') ! .and. (restart) 
   in_nscf = (trim(calculation) == 'nscf') .or. (trim(calculation) == 'bands') &
        .or. (trim(calculation)=="none")
@@ -475,53 +487,53 @@ subroutine set_wavefunction_gauge(ik)
   ! for degenerate eigenstates, only the first band of the degenerate group
   ! can be set to have positive G=0 coefficient
   
-  allocate(gauge_coefficients(nbnd))
-  gauge_coefficients = cmplx(0.,0.,kind=dp)
-  degeneracy_group = 0
-  degeneracy_group_counter = 0
-  if ( me_pool == g0_pool ) then
-    ib = 0
-    ! loop on bands
-    do while ( ib < nbnd )
-      ib = ib + 1      
-      ! check if the band is degenerate, and get the degenerate subspace size
-      sizeSubspace = 1
-      do ib2 = ib+1,nbnd
-        if (abs(et(ib,ik) - et(ib2,ik)) > 0.0001 / ryToeV) then  ! 0.1 meV
-          exit
-        end if
-        sizeSubspace = sizeSubspace + 1;
-      end do
-      degeneracy_group_counter = degeneracy_group_counter + 1
-      if (sizeSubspace == 1) then
-        gauge_coefficients(ib) = evc(1,ib)
-        degeneracy_group(ib) = degeneracy_group_counter
-      else
-        gauge_coefficients(ib:ib+sizeSubspace-1) = evc(1,ib)
-        degeneracy_group(ib:ib+sizeSubspace-1) = degeneracy_group_counter
-      end if
-      ib = ib + sizeSubspace - 1;      
-    end do ! band loop    
-  end if
+  ! allocate(gauge_coefficients(nbnd))
+  ! gauge_coefficients = cmplx(0.,0.,kind=dp)
+  ! degeneracy_group = 0
+  ! degeneracy_group_counter = 0
+  ! if ( me_pool == g0_pool ) then
+  !   ib = 0
+  !   ! loop on bands
+  !   do while ( ib < nbnd )
+  !     ib = ib + 1      
+  !     ! check if the band is degenerate, and get the degenerate subspace size
+  !     sizeSubspace = 1
+  !     do ib2 = ib+1,nbnd
+  !       if (abs(et(ib,ik) - et(ib2,ik)) > 0.0001 / ryToeV) then  ! 0.1 meV
+  !         exit
+  !       end if
+  !       sizeSubspace = sizeSubspace + 1;
+  !     end do
+  !     degeneracy_group_counter = degeneracy_group_counter + 1
+  !     if (sizeSubspace == 1) then
+  !       gauge_coefficients(ib) = evc(1,ib)
+  !       degeneracy_group(ib) = degeneracy_group_counter
+  !     else
+  !       gauge_coefficients(ib:ib+sizeSubspace-1) = evc(1,ib)
+  !       degeneracy_group(ib:ib+sizeSubspace-1) = degeneracy_group_counter
+  !     end if
+  !     ib = ib + sizeSubspace - 1;      
+  !   end do ! band loop    
+  ! end if
  
-  ! now we broadcast the phase factor
-  call mp_bcast(gauge_coefficients, g0_pool, intra_pool_comm)
-  call mp_bcast(degeneracy_group, g0_pool, intra_pool_comm)
+  ! ! now we broadcast the phase factor
+  ! call mp_bcast(gauge_coefficients, g0_pool, intra_pool_comm)
+  ! call mp_bcast(degeneracy_group, g0_pool, intra_pool_comm)
   
-  ! multiply the wavefunction for the factor that makes G=0 coefficient real>0
-  do ib = 1,nbnd
-    xc = gauge_coefficients(ib)
-    ! Now, I compute and impose the gauge
-    ! z = |z| e^(i theta)
-    theta = atan( dimag(xc) / real(xc) )
-    if ( real(xc) < 0. ) then ! rotation to make c(G) positive
-      theta = theta + pi
-    end if
-    correction = cmplx(cos(-theta), sin(-theta), kind=dp)
-    ! Impose gauge
-    evc(:,ib) = evc(:,ib) * correction
-  end do
-  deallocate(gauge_coefficients)
+  ! ! multiply the wavefunction for the factor that makes G=0 coefficient real>0
+  ! do ib = 1,nbnd
+  !   xc = gauge_coefficients(ib)
+  !   ! Now, I compute and impose the gauge
+  !   ! z = |z| e^(i theta)
+  !   theta = atan( dimag(xc) / real(xc) )
+  !   if ( real(xc) < 0. ) then ! rotation to make c(G) positive
+  !     theta = theta + pi
+  !   end if
+  !   correction = cmplx(cos(-theta), sin(-theta), kind=dp)
+  !   ! Impose gauge
+  !   evc(:,ib) = evc(:,ib) * correction
+  ! end do
+  ! deallocate(gauge_coefficients)
 
   !----------------------------------------------------------------
   ! STEP 2:
@@ -551,9 +563,6 @@ subroutine set_wavefunction_gauge(ik)
       rotations_crys = s
       rotations_cart = sr
       fraction_trans = ft
-
-
-
 
       !
       ! save on a list the irreducible wavevectors in crystal coords
@@ -708,7 +717,7 @@ subroutine set_wavefunction_gauge(ik)
   ! define ik_global as the index of this point
   ! in the full list of points that we use internally
 
-  ! xk(:,ik) is the irreducible kpoint being computed now, in cartesian coords
+  ! xk(:,ik) is the kpoint being computed now, in cartesian coords
   ! here we also get it in crystal coords
   DO i = 1, 3 
     xk_crys(i) = at(1,i)*xk(1,ik) + at(2,i)*xk(2,ik) + at(3,i)*xk(3,ik)
@@ -728,7 +737,9 @@ subroutine set_wavefunction_gauge(ik)
 
     if ( me_pool == root_pool ) then
       write(ichar,"(I4.4)") ik_global
-      file_name = trim(tmp_dir)//trim(prefix)//".phoebe.scf."//ichar//".dat"
+      write(jchar,"(I4.4)") me_pool
+      file_name = trim(tmp_dir) // trim(prefix) // ".phoebe.scf." &
+           // ichar // "." // jchar // ".dat"
       open(unit = i_unit, file = TRIM(file_name), form = 'unformatted', &
            access = 'sequential', status = 'replace', iostat = ios)
       write(i_unit) xk_crys
@@ -751,6 +762,7 @@ subroutine set_wavefunction_gauge(ik)
         !
         if ( me_pool == root_pool ) then
           write(i_unit) ib1
+          write(i_unit) igk_k(1:ngk(ik),ik)
           write(i_unit) evc_collected
         end if
         !
@@ -780,15 +792,18 @@ subroutine set_wavefunction_gauge(ik)
     ! Read from file the energies of the irreducible point
     allocate(et_irr(nbnd))
     et_irr = 0.0d0
-    if ( me_pool == root_pool ) then
+!    if ( me_pool == root_pool ) then
       ! read info on g vectors and symmetries
       write(ichar,"(I4.4)") ik_irr
+      write(jchar,"(I4.4)") me_pool
       if ( calculation == "none" ) then ! case of phonons
         ! Note: ph.x changes the scratch structure if fildvscf or electron_phonon is specified
         ! go figure
-        file_name = trim(tmp_dir) // "/../../" //trim(prefix)// ".phoebe.scf."//ichar//".dat"
+        file_name = trim(tmp_dir) // "/../../" // trim(prefix) &
+             // ".phoebe.scf." // ichar // "." // jchar // ".dat"
       else
-        file_name = trim(tmp_dir) // trim(prefix) // ".phoebe.scf."//ichar//".dat"
+        file_name = trim(tmp_dir) // trim(prefix) // ".phoebe.scf." &
+             // ichar // "." // jchar // ".dat"
       end if
       
       open(unit=i_unit, file=TRIM(file_name), form='unformatted', &
@@ -799,10 +814,10 @@ subroutine set_wavefunction_gauge(ik)
       read(i_unit) xk_irr_from_file
       read(i_unit) nbnd_
       read(i_unit) et_irr(:)
-    end if
-    call mp_bcast(et_irr, root_pool, intra_pool_comm)
-    call mp_bcast(xk_irr_from_file, root_pool, intra_pool_comm)
-    call mp_bcast(nbnd_, root_pool, intra_pool_comm)
+!    end if
+!    call mp_bcast(et_irr, root_pool, intra_pool_comm)
+!    call mp_bcast(xk_irr_from_file, root_pool, intra_pool_comm)
+!    call mp_bcast(nbnd_, root_pool, intra_pool_comm)
     
     ! find the Umklapp vector between the current k and the k from file
     if ( .not. add_time_reversal ) then
@@ -833,7 +848,8 @@ subroutine set_wavefunction_gauge(ik)
       if ( abs(et_irr(ib) - et(ib,ik)) > 1.0e-2 ) then
         print*, et_irr(:)
         print*, et(:,ik)
-        call errore("phoebe","incorrect symmetry on energies. Try increase the cutoffs.",1)
+        call errore("phoebe","incorrect symmetry on energies. "&
+             "Try increase the cutoffs.",1)
       end if
     end do
     
@@ -853,90 +869,169 @@ subroutine set_wavefunction_gauge(ik)
     ! Actual gauge fixing of degenerate states starts here
 
     ! build the list of rotated G vectors
-    allocate(rotated_g_global(3,ngm_g))
-    do ig1 = 1,ngm_g
-      ! note that G vectors are in cartesian coordinates, in units of 2Pi/alat
-      this_g(:) = g_global(:,ig1)
-      this_rotated_g(:) = matmul(inv_rotation, this_g(:)) + umklapp_vector
+    ! allocate(rotated_g_global(3,ngm_g))
+    ! do ig1 = 1,ngm_g
+    !   ! note that G vectors are in cartesian coordinates, in units of 2Pi/alat
+    !   this_g(:) = g_global(:,ig1)
+    !   this_rotated_g(:) = matmul(inv_rotation, this_g(:)) + umklapp_vector
 
-      rotated_g_global(:,ig1) = this_rotated_g(:)
-    end do
+    !   rotated_g_global(:,ig1) = this_rotated_g(:)
+    ! end do
 
-    !----------------------------------------
-    ! find the index mapping between G -> R G
-    allocate(gmap(ngm_g))
-    gmap = 0
-    do ig1 = 1,ngm_g
-      ! this search is expensive, so we go parallel within pool
-      if ( mod(ig1-1,nproc_pool) /= me_pool ) cycle
-      this_g(:) = g_global(:,ig1)
+    ! !----------------------------------------
+    ! ! find the index mapping between G -> R G
+    ! allocate(gmap(ngm_g))
+    ! gmap = 0
+    ! do ig1 = 1,ngm_g
+    !   ! this search is expensive, so we go parallel within pool
+    !   if ( mod(ig1-1,nproc_pool) /= me_pool ) cycle
+    !   this_g(:) = g_global(:,ig1)
 
-      if ( add_time_reversal ) then
-        this_g = - this_g
-      end if
+    !   if ( add_time_reversal ) then
+    !     this_g = - this_g
+    !   end if
       
-      ! it seems that the first g-vector is 0.
-      ! then there are non-zero vectors, then it's again a lot of zero vectors
-      ! here we make sure that the first gmap refers to 0 g-vector
-      if ( (sum(this_g**2) < 1.0e-6) .and. (ig1>10) ) cycle
-      ig_rotated = 0
-      do ig2 = 1,ngm_g
-        diff = sum(( this_g(:) - rotated_g_global(:,ig2) )**2)
-        if ( diff < 1.0e-6 ) then
-          gmap(ig2) = ig1
-          exit
-        end if
-      end do
-    end do
-    call mp_sum(gmap, intra_pool_comm)
-    deallocate(rotated_g_global)
+    !   ! it seems that the first g-vector is 0.
+    !   ! then there are non-zero vectors, then it's again a lot of zero vectors
+    !   ! here we make sure that the first gmap refers to 0 g-vector
+    !   if ( (sum(this_g**2) < 1.0e-6) .and. (ig1>10) ) cycle
+    !   ig_rotated = 0
+    !   do ig2 = 1,ngm_g
+    !     diff = sum(( this_g(:) - rotated_g_global(:,ig2) )**2)
+    !     if ( diff < 1.0e-6 ) then
+    !       gmap(ig2) = ig1
+    !       exit
+    !     end if
+    !   end do
+    ! end do
+    ! call mp_sum(gmap, intra_pool_comm)
+    ! deallocate(rotated_g_global)
 
+
+    ! first iteration:
+    ! allocate an array that helps us doing rotations of the wfc in real space
+    if (.not. allocated(rir)) then
+      nr1 = dffts%nr1
+      nr2 = dffts%nr2
+      nr3 = dffts%nr3
+      nr1x= dffts%nr1x
+      nr2x= dffts%nr2x
+      nr3x= dffts%nr3x
+      nxxs = nr1x*nr2x*nr3x
+      allocate(rir(nxxs,nsym))
+      rir = 0
+      do isym = 1, nsym
+        if ( mod(nint(rotations_crys(2, 1, isym) * nr1), nr2) /= 0 .or. &
+             mod(nint(rotations_crys(3, 1, isym) * nr1), nr3) /= 0 .or. &
+             mod(nint(rotations_crys(1, 2, isym) * nr2), nr1) /= 0 .or. &
+             mod(nint(rotations_crys(3, 2, isym) * nr2), nr3) /= 0 .or. &
+             mod(nint(rotations_crys(1, 3, isym) * nr3), nr1) /= 0 .or. &
+             mod(nint(rotations_crys(2, 3, isym) * nr3), nr2) /= 0 ) THEN
+          call errore ('phoebe',' a grid in real space is not compatible &
+               &with symmetry: change cutoff', isym)
+        end if
+        do ir=1, nxxs
+          rir(ir,isym) = ir
+        end do
+        ss = nint(rotations_crys(:,:,isym))
+        do k = 1, nr3
+          do j = 1, nr2
+            do i = 1, nr1
+              ! same as in lr_sym_mod, ruotaijk
+              ri = ss (1, 1) * (i - 1) + ss (2, 1) * (j - 1) + ss (3, 1) &
+                   * (k - 1)
+              ri = mod (ri, nr1) + 1
+              if (ri<1) ri = ri + nr1
+              rj = ss (1, 2) * (i - 1) + ss (2, 2) * (j - 1) + ss (3, 2) &
+                   * (k - 1)
+              rj = mod (rj, nr2) + 1
+              if (rj<1) rj = rj + nr2
+              rk = ss (1, 3) * (i - 1) + ss (2, 3) * (j - 1) + ss (3, 3) &
+                   * (k - 1)
+              rk = mod (rk, nr3) + 1
+              if (rk<1) rk = rk + nr3
+              !
+              ir =   i + ( j-1)*nr1x + ( k-1)*nr1x*nr2x
+              rir(ir,isym) = ri + (rj-1)*nr1x + (rk-1)*nr1x*nr2x
+            end do
+          end do
+        end do
+      end do
+      isym = xk_equiv_symmetry(ik_global)
+    end if
+    
+    ! Note: the symmetry operation can move the k-point out of the 1st
+    ! Brillouin zone, making the wavefunction acquire a phase
+    ! here we get info on such phase-shift
+    iks2g = -999
+    umklapp_vector = matmul(rotations_crys(:,:,isym),xk_crys(:)) &
+         - xk_irr_from_file(:)
+    do ig = 1,ngm
+      if(sum(abs(g(:,ig) - umklapp_vector)) < 1d-5) iks2g = ig
+      if (iks2g>=1) exit
+    end do
+
+  !  if (add_time_reversal) then
+      print*, matmul(transpose(rotations_crys(:,:,isym)),xk_full_cryst(:,ik_global)-fraction_trans(:,isym))
+  !  else
+  !    print*, -(matmul(transpose(rotations_crys(:,:,isym)),xk_irr_from_file(:)) + fraction_trans(:,isym))
+  !  end if
+    print*, xk_crys(:)
+    print*, xk_full_cryst(:,ik_global)
+    print*, xk_full_cryst(:,ik_irr)
+    print*, "!"
+    
     !-------------------------------------------------------
     ! compute phases due to translation
     ! these are the same for all bands
-    allocate(phases(ngm_g))
-    phases = cmplx(0.,0.,kind=dp)
-    ! ft contains  fractional translations in crystal axis
-    ! transform in cartesian coordinates
-    translation = matmul(at,fraction_trans(:,isym))
+    ! allocate(phases(ngm_g))
+    ! phases = cmplx(0.,0.,kind=dp)
+    ! ! ft contains  fractional translations in crystal axis
+    ! ! transform in cartesian coordinates
+    ! translation = matmul(at,fraction_trans(:,isym))
 
-    ! These are phases that the pw coefficients gain on rotation
-    xk_irr_from_file_cart = matmul(bg,xk_irr_from_file)
-    do ig1 = 1,ngm_g
-      if ( mod(ig1-1,nproc_pool) /= me_pool ) cycle
-      if ( (sum(g_global(:,ig1)**2) < 1.0e-6) .and. (ig1>10) ) cycle
-      arg = -tpi * dot_product( matmul(rotation,xk_irr_from_file_cart) + g_global(:,ig1) , translation )
-      phases(ig1) = cmplx(cos(arg), sin(arg), kind=dp)
-    end do
-    call mp_sum(phases, intra_pool_comm)
+    ! ! These are phases that the pw coefficients gain on rotation
+    ! xk_irr_from_file_cart = matmul(bg,xk_irr_from_file)
+    ! do ig1 = 1,ngm_g
+    !   if ( mod(ig1-1,nproc_pool) /= me_pool ) cycle
+    !   if ( (sum(g_global(:,ig1)**2) < 1.0e-6) .and. (ig1>10) ) cycle
+    !   arg = -tpi * dot_product( matmul(rotation,xk_irr_from_file_cart) + g_global(:,ig1) , translation )
+    !   phases(ig1) = cmplx(cos(arg), sin(arg), kind=dp)
+    ! end do
+   ! call mp_sum(phases, intra_pool_comm)
     
     !-------------------------------------------------------
     ! Rotate wavefunction plane wave coefficients
     
-    allocate(evc_irreducible(ngm_g))
-    allocate(evc_rotated(ngm_g))
+    allocate(evc_irreducible(ngk(ik)))
 
     ! create a matrix that rotates the wavefunctions according to symmetry
-    unitary_matrix = cmplx(0.,0.,kind=dp)
-   
+    !unitary_matrix = cmplx(0.,0.,kind=dp)
+
+    ! compute the phase
+    allocate( phase(dffts%nnr) )
+    phase(:) = (0.d0,0.d0)
+    ! missing phase G of above is given here and below.
+    IF (iks2g >= 0) then
+      phase(dffts%nl(iks2g))=(1d0,0d0)
+    end if
+    call invfft ('Wave', phase, dffts)
+    ! Set up variables and stuff needed to rotate wavefunctions
+    nxxs = dffts%nr1x *dffts%nr2x *dffts%nr3x
+    allocate(psic_all(nxxs), temppsic_all(nxxs) )
+    allocate(igk_k_irr(ngk(ik)))
     do ib1 = 1,nbnd
       evc_irreducible(:) = cmplx(0.,0.,kind=dp)
-      evc_rotated(:) = cmplx(0.,0.,kind=dp)
-        
       ! Read the wavefunction at the irreducible point
       ! remember that the array is not distributed, and ordered like g_global
-
-      if ( me_pool == root_pool ) then
-        ! read info on g vectors and symmetries
-        read(i_unit) ib1_
-        read(i_unit) evc_irreducible          
+      ! read info on g vectors and symmetries
+      read(i_unit) ib1_
+      read(i_unit) igk_k_irr
+      read(i_unit) evc_irreducible          
+      if (isym==1) then
+        evc(1:ngk(ik),ib1) = evc_irreducible(1:ngk(ik))
+        cycle
       end if
-      call mp_bcast(ib1_, root_pool, intra_pool_comm)
-      if ( ib1 /= ib1_ ) then
-        call errore("phoebe", "Unexpected degenerate band", 1)
-      end if
-      call mp_bcast(evc_irreducible, root_pool, intra_pool_comm)
-
       !---------------------------------------------------------------------
       ! Rotate the wavefunction
 
@@ -948,68 +1043,67 @@ subroutine set_wavefunction_gauge(ik)
       ! create evc_rotated: a wfc, not parallel distributed, with G-vectors
       ! ordered like g_global, which satisfies the symmetries
 
-      if ( .not. add_time_reversal ) then
-        do ig = 1,ngm_g
-          if ( gmap(ig) > 0 ) then
-            evc_rotated(ig) = evc_irreducible(gmap(ig)) * phases(ig)
-          end if
-        end do
-      else ! in case of time reversal, we conjugate the coefficients at -G, but not the phase!
-        do ig = 1,ngm_g
-          if ( gmap(ig) > 0 ) then
-            evc_rotated(ig) = conjg(evc_irreducible(gmap(ig))) * phases(ig)
-          end if
-        end do
-      end if
+      ! apply translation vector t involved in the symmetry operation
 
-      allocate(evc_collected(ngm_g))
-      evc_collected = cmplx(0.,0.,kind=dp)
       do ig = 1,ngk(ik)
-        evc_collected(ig_l2g(igk_k(ig,ik))) = evc(ig,ib1)
+        evc_irreducible(ig) = evc_irreducible(ig) &
+             * exp(dcmplx(0d0,+sum((matmul(g(:,igk_k(ig,ik)),sr(:,:,isym))+xk(:,ik))*fraction_trans(:,isym))*tpi))
       end do
-      deallocate(evc_collected)
-      
-      ! substitute back in QE array
-      ! In doing so, we must reorder the G-vectors and distribute the wavefunction
-      !do ig = 1,ngk(ik)
-      !  evc(ig,ib1) = evc_rotated(ig_l2g(igk_k(ig,ik)))
-      !end do
-      
-     do ib2 = 1,nbnd
-       if ( degeneracy_group(ib1) == degeneracy_group(ib2) ) then
-         do ig = 1,ngk(ik)
-           unitary_matrix(ib1,ib2) = unitary_matrix(ib1,ib2) + &
-                conjg(evc(ig,ib2)) * evc_rotated(ig_l2g(igk_k(ig,ik)))
-         end do
-       end if
-     end do
+      ! copy wavefunction evc in psic, sorting G-vectors as |G|^2
+      ! Note: for non-collinear calculations, we'll use the spinor psic_nc
+      psic(:) = (0.d0, 0.d0)
+      psic(dffts%nl(igk_k(1:ngk(ik),ik))) = evc_irreducible(1:ngk(ik))
+      ! go to real space
+CALL invfft ('Wave', psic, dffts)
+#if defined(__MPI)
+      ! gather among all the CPUs
+CALL gather_grid(dffts, psic, temppsic_all)
+      ! apply rotation
+!psic_all(1:nxxs) = temppsic_all(rir(1:nxxs,isym))
+      psic_all(rir(1:nxxs,isym)) = temppsic_all(1:nxxs)
+      ! scatter back a piece to each CPU
+      CALL scatter_grid(dffts, psic_all, psic)
+#else
+      psic(rir(1:nxxs, isym)) = psic(1:nxxs)
+#endif
+      ! apply phase k -> k+G
+      psic(1:dffts%nnr) = psic(1:dffts%nnr) * phase(1:dffts%nnr)
+      ! go back to G space
+      CALL fwfft('Wave', psic, dffts)
+      ! substitute back into evc
+      evc(1:ngk(ik),ib1) = psic(dffts%nl(igk_k(1:ngk(ik),ik)))
       
     end do
+    deallocate(igk_k_irr)
+    close(i_unit)
     
-    call mp_sum(unitary_matrix, intra_pool_comm)
+    !call mp_sum(unitary_matrix, intra_pool_comm)
 
     !------------------------------
     ! reinforce matrix is unitary (but note it's not hermitian)
-    delta_matrix = cmplx(0.,0.,kind=dp)
-    do ib1 = 1,nbnd
-      delta_matrix(ib1,ib1) = cmplx(1.,0.,kind=dp)
-    end do
-    delta_matrix = delta_matrix - matmul(unitary_matrix,conjg(transpose(unitary_matrix)))
-    delta_matrix = matmul(matmul(conjg(transpose(unitary_matrix)),delta_matrix),unitary_matrix)
-    do ib1 = 1,nbnd
-      delta_matrix(ib1,ib1) = delta_matrix(ib1,ib1) + cmplx(1.,0.,kind=dp)
-    end do
-    call zpotrf("L",nbnd,delta_matrix,nbnd,ib2)
-    if ( ib2 /= 0 ) call errore("phoebe","Cholesky failed",1)
-    unitary_matrix = matmul(unitary_matrix,delta_matrix)
+    ! delta_matrix = cmplx(0.,0.,kind=dp)
+    ! do ib1 = 1,nbnd
+    !   delta_matrix(ib1,ib1) = cmplx(1.,0.,kind=dp)
+    ! end do
+    ! delta_matrix = delta_matrix - matmul(unitary_matrix,conjg(transpose(unitary_matrix)))
+    ! delta_matrix = matmul(matmul(conjg(transpose(unitary_matrix)),delta_matrix),unitary_matrix)
+    ! do ib1 = 1,nbnd
+    !   delta_matrix(ib1,ib1) = delta_matrix(ib1,ib1) + cmplx(1.,0.,kind=dp)
+    ! end do
+    ! call zpotrf("L",nbnd,delta_matrix,nbnd,ib2)
+    ! if ( ib2 /= 0 ) call errore("phoebe","Cholesky failed",1)
+    ! unitary_matrix = matmul(unitary_matrix,delta_matrix)
     
-    unitary_matrix = matmul( unitary_matrix, conjg(transpose(unitary_matrix)) ) 
+    ! unitary_matrix = matmul( unitary_matrix, conjg(transpose(unitary_matrix)) ) 
     
-    deallocate(et_irr)
-    deallocate(evc_rotated, evc_irreducible, gmap, phases)
-    if ( me_pool == root_pool ) close(i_unit)
+    deallocate(et_irr, phase)
+    deallocate(evc_irreducible)
 
   end if
+  
+#if defined(__MPI)
+  if (allocated(psic_all)) deallocate( psic_all )
+#endif
   
   return
 end subroutine set_wavefunction_gauge
