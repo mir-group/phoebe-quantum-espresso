@@ -10,29 +10,35 @@ MODFLAGS= $(MOD_FLAG)../UtilXlib $(MOD_FLAG)../external/devxlib/src
 # OBJS_GPU   depend upon modules in devxlib
 
 OBJS_DEP= \
+vloc_mod.o \
+rhoc_mod.o \
+rhoat_mod.o \
+qrad_mod.o  \
+qvan2.o \
+dqvan2.o \
+gen_us_dj.o \
+gen_us_dy.o \
 init_us_0.o \
 init_us_b0.o \
 init_us_1.o \
 init_us_2_base.o \
 init_tab_atwfc.o \
-init_tab_beta.o \
-init_tab_qrad.o
+init_tab_beta.o
 
 OBJS_NODEP= \
 atom.o \
 atomic_number.o \
-dqvan2.o \
 dylmr2.o \
 gth.o \
 interp_atwfc.o \
 paw_variables.o \
 pseudo_types.o \
-qvan2.o \
 radial_grids.o \
 read_cpmd.o \
 read_fhi.o \
 read_ncpp.o \
 read_ps.o \
+read_psml.o \
 read_upf_new.o \
 read_upf_v1.o \
 read_uspp.o \
@@ -55,6 +61,7 @@ upf_to_internal.o \
 upf_utils.o \
 uspp.o \
 uspp_data.o \
+uspp_param.o \
 write_upf_new.o \
 xmltools.o \
 ylmr2.o
@@ -63,11 +70,9 @@ ylmr2.o
 OBJS_GPU= \
   dylmr2_gpu.o \
   init_us_2_base_gpu.o \
-  interp_atwfc_gpu.o \
-  qvan2_gpu.o \
-  simpsn_gpu.o \
-  sph_bes_gpu.o \
   ylmr2_gpu.o
+
+OBJS_NODEP+= dom.o wxml.o
 
 all : libupf.a virtual_v2.x upfconv.x casino2upf.x
 

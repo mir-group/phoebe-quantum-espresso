@@ -20,6 +20,7 @@ set(src_hp
     src/hp_load_q.f90
     src/hp_ns_trace.f90
     src/hp_openfil_q.f90
+    src/hp_psym_dmag.f90
     src/hp_psymdvscf.f90
     src/hp_postproc.f90
     src/hp_prepare_q.f90
@@ -33,6 +34,7 @@ set(src_hp
     src/hp_run_nscf.f90
     src/hp_solve_linear_system.f90
     src/hp_symdnsq.f90
+    src/hp_sym_dmag.f90
     src/hp_symdvscf.f90
     src/hp_setup_q.f90
     src/hp_summary.f90
@@ -74,3 +76,9 @@ target_link_libraries(qe_hp_exe
 qe_install_targets(
     qe_hp
     qe_hp_exe)
+
+add_custom_target(hp
+    DEPENDS
+        qe_hp_exe
+    COMMENT
+        "calculation of the Hubbard parameters from DFPT")

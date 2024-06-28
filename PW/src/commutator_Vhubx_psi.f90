@@ -9,11 +9,11 @@
 !-----------------------------------------------------------------------
 SUBROUTINE commutator_Vhubx_psi(ik, nbnd_calc, vpol, dpsi)
   !-----------------------------------------------------------------------
+  !! This routine computes the commutator between the non-local
+  !! Hubbard potential and the position operator, applied to \text{psi}
+  !! of the current k-point. The result is added to \text{dpsi}.
   !
-  ! This routine computes the commutator between the non-local
-  ! Hubbard potential and the position operator, applied to psi
-  ! of the current k point, i.e. [V_hub, r \dot vpol]|psi_nk>.
-  ! The result is added to dpsi.
+  ! calculates: [V_hub, r \dot vpol]|psi_nk>
   !
   ! vpol is the polarization vector in Cartesian coordinates.
   ! For crystal coordinate, use vpol = at(:, ipol).
@@ -35,6 +35,7 @@ SUBROUTINE commutator_Vhubx_psi(ik, nbnd_calc, vpol, dpsi)
                              is_hubbard, nwfcU, offsetU, oatwfc
   USE uspp,           ONLY : vkb, nkb, okvan
   USE uspp_param,     ONLY : nh, upf
+  USE uspp_init,      ONLY : gen_us_dj, gen_us_dy
   USE lsda_mod,       ONLY : lsda, current_spin, isk, nspin
   USE klist,          ONLY : xk, ngk, igk_k
   USE cell_base,      ONLY : tpiba
@@ -49,11 +50,11 @@ SUBROUTINE commutator_Vhubx_psi(ik, nbnd_calc, vpol, dpsi)
   IMPLICIT NONE
   !
   INTEGER, INTENT(IN) :: ik
-  !! k point index
+  !! k-point index
   INTEGER, INTENT(IN) :: nbnd_calc
   !! Number of bands to calculate [V_hub, x_ipol]|psi_ik>
   REAL(DP), INTENT(IN) :: vpol(3)
-  !! polarization vector in Cartesian coordinates
+  !! Polarization vector in Cartesian coordinates
   COMPLEX(DP), INTENT(OUT) :: dpsi(npwx*npol, nbnd_calc)
   !! Output wavefunction where [V_hub, x_ipol]|psi_ik> is added
   !
@@ -312,7 +313,7 @@ SUBROUTINE commutator_Vhubx_psi(ik, nbnd_calc, vpol, dpsi)
                                              (Hubbard_U(nt) - Hubbard_J0(nt))
             ENDDO
             !
-            !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+            !---------------------------------------------------------------
             ! The following is for the J0\=0 case
             !
             IF (nspin.EQ.2 .AND. Hubbard_J0(nt).NE.0.d0) THEN

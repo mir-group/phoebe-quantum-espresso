@@ -40,7 +40,6 @@ set(sources
     src/selfen.f90
     src/spectral_func.f90
     src/ephwann_shuffle.f90
-    src/ephwann_shuffle_mem.f90
     src/epw_init.f90
     src/epw_readin.f90
     src/epw_setup.f90
@@ -51,9 +50,13 @@ set(sources
     src/loadbm.f90
     src/bfield.f90
     src/io_indabs.f90
-    src/ephblochkq.f90
-    src/wfc_elec.f90
-    src/test_tools.f90)
+    src/polaron.f90
+    src/qdabs.f90
+    src/wfpt_mod.f90
+    src/rotate_wavefunction.f90
+    src/selfen_ahc.f90
+    src/read_ahc_files.f90
+    )
 
 qe_add_library(qe_epw ${sources})
 target_link_libraries(
@@ -133,3 +136,9 @@ qe_install_targets(
     qe_epw_exe qe_zg_exe qe_zg_disca_exe qe_zg_pp_disca_exe qe_zg_bands_unfold_exe qe_zg_pp_spctrlfn_exe qe_zg_epsilon_Gaus_exe)
 
 install(PROGRAMS bin/pp.py TYPE BIN RENAME epw_pp.py)
+
+add_custom_target(epw
+    DEPENDS
+        qe_epw_exe
+    COMMENT
+        "electron-Phonon Coupling with wannier functions")

@@ -1,5 +1,5 @@
 !
-! Copyright (C) 2001-2020 Quantum ESPRESSO group
+! Copyright (C) 2001-2023 Quantum ESPRESSO group
 ! This file is distributed under the terms of the
 ! GNU General Public License. See the file `License'
 ! in the root directory of the present distribution,
@@ -11,9 +11,11 @@ SUBROUTINE orthoUwfc(save_wfcatom)
   !-----------------------------------------------------------------------
   !
   ! This routine saves to buffer "iunhub" atomic wavefunctions having an
-  ! associated Hubbard U term * S, for DFT+U(+V) calculations. Same for
-  ! Atomic wavefunctions are orthogonalized if desired, depending upon
-  ! the value of "U_projection". "swfcatom" must NOT be allocated on input.
+  ! associated Hubbard U term * S, for DFT+U(+V) calculations. Same for 
+  ! "iunhub2" but without S (this is then used to computed Hubbard forces 
+  ! and stresses). Atomic wavefunctions
+  ! are orthogonalized if desired, depending upon the value of "Hubbard_projectors"
+  ! "swfcatom" must NOT be allocated on input.
   !
   ! If save_wfcatom == .TRUE., also write atomic wavefunctions before
   ! applying S to buffer.
@@ -25,15 +27,14 @@ SUBROUTINE orthoUwfc(save_wfcatom)
   USE ions_base,  ONLY : nat
   USE basis,      ONLY : natomwfc, swfcatom
   USE klist,      ONLY : nks, xk, ngk, igk_k
-  USE ldaU,       ONLY : U_projection, wfcU, nwfcU, copy_U_wfc
+  USE ldaU,       ONLY : Hubbard_projectors, wfcU, nwfcU, copy_U_wfc
   USE wvfct,      ONLY : npwx
   USE uspp,       ONLY : nkb, vkb
-  USE becmod,     ONLY : allocate_bec_type, deallocate_bec_type, &
+  USE becmod,     ONLY : allocate_bec_type_acc, deallocate_bec_type_acc, &
                          bec_type, becp, calbec
-  USE control_flags,    ONLY : gamma_only
+  USE control_flags,    ONLY : gamma_only, use_gpu, offload_type
   USE noncollin_module, ONLY : noncolin, npol
   USE mp_bands,         ONLY : use_bgrp_in_hpsi
-  USE becmod_subs_gpum, ONLY : using_becp_auto
   USE uspp_init,        ONLY : init_us_2
   IMPLICIT NONE
   !
@@ -46,86 +47,93 @@ SUBROUTINE orthoUwfc(save_wfcatom)
   ! ibnd: counter on bands
   LOGICAL :: orthogonalize_wfc, normalize_only, save_flag
   COMPLEX(DP) , ALLOCATABLE :: wfcatom (:,:)
-
-  IF ( U_projection == "pseudo" ) THEN
-     WRITE( stdout,*) 'Beta functions used for LDA+U Projector'
+  !
+  IF ( Hubbard_projectors == "pseudo" ) THEN
+     WRITE( stdout,*) 'Beta functions used for Hubbard projectors'
      RETURN
-  ELSE IF (U_projection=="file") THEN
+  ELSE IF (Hubbard_projectors=="wf") THEN
      !
-     ! Read atomic wavefunctions from file (produced by pmw.x). In this case,
-     ! U-specific atomic wavefunctions wfcU coincide with atomic wavefunctions
+     ! Read Wannier functions from file (produced by pmw.x).
      !
-     WRITE( stdout,*) 'LDA+U Projector read from file '
+     WRITE( stdout,*) 'Hubbard projectors are read from file produced by pmw.x'
      DO ik = 1, nks
         CALL get_buffer (wfcU, nwordwfcU, iunhub, ik)
      END DO
      RETURN
-  ELSE IF (U_projection=="atomic") THEN
+     !
+  ELSE IF (Hubbard_projectors=="atomic") THEN
      orthogonalize_wfc = .FALSE.
      normalize_only = .FALSE.
-     WRITE( stdout,*) 'Atomic wfc used for LDA+U Projector are NOT orthogonalized'
-  ELSE IF (U_projection=="ortho-atomic") THEN
+     WRITE( stdout,'(/5x,a,/)') 'Atomic wfc used for Hubbard projectors are NOT orthogonalized'
+  ELSE IF (Hubbard_projectors=="ortho-atomic") THEN
      orthogonalize_wfc = .TRUE.
      normalize_only = .FALSE.
-     WRITE( stdout,*) 'Atomic wfc used for LDA+U Projector are orthogonalized'
+     WRITE( stdout,'(/5x,a,/)') 'Atomic wfc used for Hubbard projectors are orthogonalized'
      IF (gamma_only) CALL errore('orthoUwfc', &
           'Gamma-only calculation for this case not implemented', 1 )
-  ELSE IF (U_projection=="norm-atomic") THEN
+  ELSE IF (Hubbard_projectors=="norm-atomic") THEN
      orthogonalize_wfc = .TRUE.
      normalize_only = .TRUE.
-     WRITE( stdout,*) 'Atomic wfc used for LDA+U Projector are normalized but NOT orthogonalized'
+     WRITE( stdout,'(/5x,a,/)') 'Atomic wfc used for Hubbard projectors are normalized but NOT orthogonalized'
      IF (gamma_only) CALL errore('orthoUwfc', &
           'Gamma-only calculation for this case not implemented', 1 )
   ELSE
-     WRITE( stdout,*) "U_projection_type =", U_projection
-     CALL errore ("orthoUwfc"," this U_projection_type is not valid",1)
+     WRITE(stdout,'(/5x,"Hubbard_projectors = ",a)') Hubbard_projectors
+     CALL errore ("orthoUwfc"," This type of Hubbard projectors is not valid",1)
   END IF
   !
   ALLOCATE ( wfcatom(npwx*npol, natomwfc), swfcatom(npwx*npol, natomwfc) )
+  !$acc enter data create(wfcatom, swfcatom)
   !
   save_flag = use_bgrp_in_hpsi ; use_bgrp_in_hpsi=.false.
   !
   ! Allocate the array becp = <beta|wfcatom>
-  CALL allocate_bec_type (nkb,natomwfc, becp)
-  CALL using_becp_auto(2)
+  CALL allocate_bec_type_acc (nkb,natomwfc, becp)
   !
   DO ik = 1, nks
      !
      IF (noncolin) THEN
        CALL atomic_wfc_nc_updown (ik, wfcatom)
+       !$acc update device(wfcatom)
      ELSE
-       CALL atomic_wfc (ik, wfcatom)
+       IF(use_gpu) THEN
+         !$acc host_data use_device(wfcatom)
+         CALL atomic_wfc_gpu( ik, wfcatom )
+         !$acc end host_data
+       ELSE
+         CALL atomic_wfc (ik, wfcatom)
+       END IF
      ENDIF
      npw = ngk (ik)
-     CALL init_us_2 (npw, igk_k(1,ik), xk (1, ik), vkb)
-     CALL calbec (npw, vkb, wfcatom, becp)
-     CALL s_psi (npwx, npw, natomwfc, wfcatom, swfcatom)
+     CALL init_us_2 (npw, igk_k(1,ik), xk (1, ik), vkb, use_gpu)
+     CALL calbec (offload_type, npw, vkb, wfcatom, becp)
+     !$acc host_data use_device(wfcatom, swfcatom)
+     CALL s_psi_acc (npwx, npw, natomwfc, wfcatom, swfcatom)
+     !$acc end host_data
      !
-     IF (orthogonalize_wfc) &
-        CALL ortho_swfc ( npw, normalize_only, natomwfc, wfcatom, swfcatom, .FALSE. )
+     IF (orthogonalize_wfc) CALL ortho_swfc ( npw, normalize_only, natomwfc, wfcatom, swfcatom, .FALSE. )
      !
      ! copy S * atomic wavefunctions with Hubbard U term only in wfcU
      ! (this is used during the self-consistent solution of Kohn-Sham equations)
      ! save to unit iunhub
      !
+     !$acc update host(swfcatom)
      CALL copy_U_wfc (swfcatom, noncolin)
      IF ( nks > 1 ) CALL save_buffer (wfcU, nwordwfcU, iunhub, ik)
      !
      ! If save_wfcatom=.TRUE. copy the orthonormalized wfcatom to wfcU and save
      ! to unit iunhubnoS
      !
-     IF (save_wfcatom) THEN
-        IF (orthogonalize_wfc) THEN
-           CALL ortho_swfc ( npw, normalize_only, natomwfc, wfcatom, swfcatom, .TRUE. )
-        ENDIF
+     IF (save_wfcatom.and..not.use_gpu) THEN
+        IF (orthogonalize_wfc) CALL ortho_swfc ( npw, normalize_only, natomwfc, wfcatom, swfcatom, .TRUE. )
         CALL copy_U_wfc (wfcatom, noncolin)
         CALL save_buffer (wfcU, nwordwfcU, iunhub_noS, ik)
      ENDIF
      !
   ENDDO
+  !$acc exit data delete(wfcatom, swfcatom)
   DEALLOCATE (wfcatom, swfcatom)
-  CALL deallocate_bec_type ( becp )
-  CALL using_becp_auto(2)
+  CALL deallocate_bec_type_acc ( becp )
   !
   use_bgrp_in_hpsi = save_flag
   !
@@ -134,15 +142,17 @@ SUBROUTINE orthoUwfc(save_wfcatom)
 END SUBROUTINE orthoUwfc
 !
 !-----------------------------------------------------------------------
-SUBROUTINE orthoUwfc2 (ik)
+SUBROUTINE orthoUwfc_k (ik, lflag)
   !-----------------------------------------------------------------------
   !
   ! For a given k point "ik", this routine computes (ortho-)atomic wavefunctions 
   ! having an associated Hubbard U term * S, for DFT+U(+V) calculations. 
-  ! Also without S (this is then used to computed Hubbard forces 
-  ! and stresses). 
+  ! Also without S (this is then used to computed Hubbard forces and stresses). 
   ! wfcatom and swfcatom must be allocated on input.
   ! Beta functions vkb must be already computed before.
+  !
+  ! lflag=.TRUE.  : wfcU = O^{-1/2}  \phi (w/o ultrasoft S)
+  ! lflag=.FALSE. : wfcU = O^{-1/2} S\phi (w/  ultrasoft S)
   !
   USE kinds,            ONLY : DP
   USE io_global,        ONLY : stdout
@@ -150,40 +160,40 @@ SUBROUTINE orthoUwfc2 (ik)
   USE ions_base,        ONLY : nat
   USE basis,            ONLY : natomwfc, wfcatom, swfcatom
   USE klist,            ONLY : nks, xk, ngk, igk_k
-  USE ldaU,             ONLY : U_projection, wfcU, nwfcU, copy_U_wfc
+  USE ldaU,             ONLY : Hubbard_projectors, wfcU, nwfcU, copy_U_wfc
   USE wvfct,            ONLY : npwx
   USE uspp,             ONLY : nkb, vkb
-  USE becmod,           ONLY : allocate_bec_type, deallocate_bec_type, &
+  USE becmod,           ONLY : allocate_bec_type_acc, deallocate_bec_type_acc, &
                                bec_type, becp, calbec
   USE control_flags,    ONLY : gamma_only
-  USE noncollin_module, ONLY : noncolin 
-  USE becmod_subs_gpum, ONLY : using_becp_auto
+  USE noncollin_module, ONLY : noncolin, npol
   IMPLICIT NONE
   !
   INTEGER, INTENT(IN) :: ik ! the k point under consideration
+  LOGICAL, INTENT(IN) :: lflag
   !
   INTEGER :: ibnd, info, i, j, k, na, nb, nt, isym, n, ntemp, m, &
              l, lm, ltot, ntot, ipol, npw
   LOGICAL :: orthogonalize_wfc, normalize_only, save_flag
   COMPLEX(DP), ALLOCATABLE :: aux(:,:)
 
-  IF ( U_projection == "pseudo" ) THEN
-     CALL errore ("orthoUwfc2","U_projection=pseudo is not supported",1)
-  ELSE IF (U_projection=="file") THEN
-     CALL errore ("orthoUwfc2","U_projection=file is not supported",1)
-  ELSE IF (U_projection=="atomic") THEN
+  IF ( Hubbard_projectors == "pseudo" ) THEN
+     CALL errore ("orthoUwfc_k","Hubbard_projectors=pseudo is not supported",1)
+  ELSE IF (Hubbard_projectors=="wf") THEN
+     CALL errore ("orthoUwfc_k","Hubbard_projectors=wf is not supported",1)
+  ELSE IF (Hubbard_projectors=="atomic") THEN
      orthogonalize_wfc = .FALSE.
      normalize_only = .FALSE.
-  ELSE IF (U_projection=="ortho-atomic") THEN
+  ELSE IF (Hubbard_projectors=="ortho-atomic") THEN
      orthogonalize_wfc = .TRUE.
      normalize_only = .FALSE.    
-     IF (gamma_only) CALL errore('orthoUwfc2', &
+     IF (gamma_only) CALL errore('orthoUwfc_k', &
           'Gamma-only calculation for this case not implemented', 1 )
-  ELSE IF (U_projection=="norm-atomic") THEN
-     CALL errore ("orthoUwfc2","U_projection=norm-atomic is not supported",1)
+  ELSE IF (Hubbard_projectors=="norm-atomic") THEN
+     CALL errore ("orthoUwfc_k","Hubbard_projectors=norm-atomic is not supported",1)
   ELSE
-     WRITE( stdout,*) "U_projection_type =", U_projection
-     CALL errore ("orthoUwfc2"," this U_projection_type is not valid",1)
+     WRITE(stdout,'(/5x,"Hubbard_projectors = ",a)') Hubbard_projectors
+     CALL errore ("orthoUwfc_k"," this Hubbard_projectors type is not valid",1)
   END IF
   !
   ! Compute atomic wfc at this k (phi)
@@ -193,37 +203,44 @@ SUBROUTINE orthoUwfc2 (ik)
      CALL atomic_wfc (ik, wfcatom)
   ENDIF
   !
-  IF (U_projection=="ortho-atomic") THEN
-     ALLOCATE(aux(npwx,natomwfc))
+  IF (Hubbard_projectors=="ortho-atomic") THEN
+     ALLOCATE(aux(npwx*npol,natomwfc))
      ! Copy atomic wfcs (phi)
      aux(:,:) = wfcatom(:,:)
   ENDIF
   !
-  IF (orthogonalize_wfc) THEN
-     !
-     ! Number of plane waves at this k point
-     npw = ngk(ik)
-     !
+  ! Number of plane waves at this k point
+  npw = ngk(ik)
+  !
+  IF (orthogonalize_wfc .OR. .NOT.lflag) THEN
      ! Allocate the array becp = <beta|wfcatom>
-     CALL allocate_bec_type (nkb,natomwfc, becp)
-     CALL using_becp_auto(2)
+     CALL allocate_bec_type_acc (nkb,natomwfc, becp)
      CALL calbec (npw, vkb, wfcatom, becp)
      ! Calculate swfcatom = S * phi
      CALL s_psi (npwx, npw, natomwfc, wfcatom, swfcatom)
-     CALL deallocate_bec_type (becp)
-     CALL using_becp_auto(2)
-     !  
-     ! Compute the overlap matrix
-     ! On the output: wfcatom = O^{-1/2} \phi (no ultrasoft S)
-     CALL ortho_swfc ( npw, normalize_only, natomwfc, wfcatom, swfcatom, .TRUE. )
-     !
+     CALL deallocate_bec_type_acc (becp)
   ENDIF
   !
-  ! Copy (ortho-)atomic wavefunctions with Hubbard U term only 
-  ! in wfcU (no ultrasoft S).
-  CALL copy_U_wfc (wfcatom, noncolin)
+  ! Compute the overlap matrix
+  ! lflag=.FALSE. : On the output wfcatom are unchanged, swfcatom = O^{-1/2} S\phi.
+  ! lflag=.TRUE.  : On the output wfcatom = O^{-1/2} \phi (no ultrasoft S), swfcatom are unchanged.
+  IF (orthogonalize_wfc) THEN
+     !$acc data copy(wfcatom, swfcatom)
+     CALL ortho_swfc ( npw, normalize_only, natomwfc, wfcatom, swfcatom, lflag )
+     !$acc end data
+  END IF
   !
-  IF (U_projection=="ortho-atomic") THEN
+  IF (lflag) THEN
+     ! Copy (ortho-)atomic wavefunctions with Hubbard U term only
+     ! in wfcU (no ultrasoft S): wfcatom = O^{-1/2} \phi.
+     CALL copy_U_wfc (wfcatom, noncolin)
+  ELSE
+     ! Copy (ortho-)atomic wavefunctions with Hubbard U term only
+     ! in wfcU (with ultrasoft S): swfcatom = O^{-1/2} S\phi.
+     CALL copy_U_wfc (swfcatom, noncolin)
+  ENDIF
+  !
+  IF (Hubbard_projectors=="ortho-atomic") THEN
      ! Copy atomic wfcs
      wfcatom(:,:) = aux(:,:)
      DEALLOCATE(aux)
@@ -231,7 +248,7 @@ SUBROUTINE orthoUwfc2 (ik)
   !
   RETURN
   !   
-END SUBROUTINE orthoUwfc2
+END SUBROUTINE orthoUwfc_k
 !
 !-----------------------------------------------------------------------
 SUBROUTINE orthoatwfc (orthogonalize_wfc)
@@ -242,18 +259,18 @@ SUBROUTINE orthoatwfc (orthogonalize_wfc)
   ! "swfcatom" must be allocated on input.
   ! Useful for options "wannier" and "one_atom_occupations"
   !
-  USE kinds,      ONLY : DP
-  USE buffers,    ONLY : save_buffer
-  USE io_global,  ONLY : stdout
-  USE io_files,   ONLY : iunsat, nwordatwfc
-  USE ions_base,  ONLY : nat
-  USE basis,      ONLY : natomwfc, swfcatom
-  USE klist,      ONLY : nks, xk, ngk, igk_k
-  USE wvfct,      ONLY : npwx
-  USE uspp,       ONLY : nkb, vkb
-  USE becmod,     ONLY : allocate_bec_type, deallocate_bec_type, &
-                         bec_type, becp, calbec
-  USE control_flags,    ONLY : gamma_only
+  USE kinds,            ONLY : DP
+  USE buffers,          ONLY : save_buffer
+  USE io_global,        ONLY : stdout
+  USE io_files,         ONLY : iunsat, nwordatwfc
+  USE ions_base,        ONLY : nat
+  USE basis,            ONLY : natomwfc, swfcatom
+  USE klist,            ONLY : nks, xk, ngk, igk_k
+  USE wvfct,            ONLY : npwx
+  USE uspp,             ONLY : nkb, vkb
+  USE becmod,           ONLY : allocate_bec_type_acc, deallocate_bec_type_acc, &
+                               bec_type, becp, calbec
+  USE control_flags,    ONLY : gamma_only, use_gpu, offload_type
   USE noncollin_module, ONLY : noncolin, npol
   USE uspp_init,        ONLY : init_us_2
   IMPLICIT NONE
@@ -266,35 +283,48 @@ SUBROUTINE orthoatwfc (orthogonalize_wfc)
   ! ibnd: counter on bands
   LOGICAL :: normalize_only = .FALSE.
   COMPLEX(DP) , ALLOCATABLE :: wfcatom (:,:)
-
+  
   normalize_only=.FALSE.
   ALLOCATE (wfcatom( npwx*npol, natomwfc))
+  !$acc enter data create(wfcatom, swfcatom)
 
   ! Allocate the array becp = <beta|wfcatom>
-  CALL allocate_bec_type (nkb,natomwfc, becp) 
+  CALL allocate_bec_type_acc (nkb,natomwfc, becp) 
   
   DO ik = 1, nks
      
      IF (noncolin) THEN
        CALL atomic_wfc_nc_updown (ik, wfcatom)
+       !$acc update device(wfcatom)
      ELSE
-       CALL atomic_wfc (ik, wfcatom)
+       IF(use_gpu) THEN 
+         !$acc host_data use_device(wfcatom)
+         CALL atomic_wfc_gpu( ik, wfcatom )
+         !$acc end host_data
+       ELSE
+         CALL atomic_wfc (ik, wfcatom)
+       END IF
      ENDIF
      npw = ngk (ik)
-     CALL init_us_2 (npw, igk_k(1,ik), xk (1, ik), vkb)
-     CALL calbec (npw, vkb, wfcatom, becp) 
-     CALL s_psi (npwx, npw, natomwfc, wfcatom, swfcatom)
-
-     IF (orthogonalize_wfc) &
-        CALL ortho_swfc ( npw, normalize_only, natomwfc, wfcatom, swfcatom, .FALSE. )
+     !
+     CALL init_us_2 (npw, igk_k(1,ik), xk (1, ik), vkb, use_gpu)
+     !
+     CALL calbec (offload_type, npw, vkb, wfcatom, becp)     
+     !$acc host_data use_device(wfcatom, swfcatom)
+     CALL s_psi_acc( npwx, npw, natomwfc, wfcatom, swfcatom )
+     !$acc end host_data
+     !
+     IF (orthogonalize_wfc) CALL ortho_swfc ( npw, normalize_only, natomwfc, wfcatom, swfcatom, .FALSE. )
      !
      ! write S * atomic wfc to unit iunsat
      !
+     !$acc update host(swfcatom)
      CALL save_buffer (swfcatom, nwordatwfc, iunsat, ik)
      !
   ENDDO
+  !$acc exit data delete(wfcatom, swfcatom)
   DEALLOCATE (wfcatom)
-  CALL deallocate_bec_type ( becp )
+  CALL deallocate_bec_type_acc ( becp )
   !
   RETURN
      
@@ -316,10 +346,11 @@ SUBROUTINE ortho_swfc ( npw, normalize_only, m, wfc, swfc, lflag )
   !
   USE kinds,            ONLY : DP
   USE wvfct,            ONLY : npwx
-  USE mp_bands,         ONLY : intra_bgrp_comm
+  USE mp_bands,         ONLY : intra_bgrp_comm, me_bgrp, root_bgrp
   USE mp,               ONLY : mp_sum
   USE noncollin_module, ONLY : noncolin, npol
   USE force_mod,        ONLY : eigenval, eigenvect, overlap_inv
+  USE control_flags,    ONLY : use_gpu
   !
   IMPLICIT NONE
   !
@@ -328,52 +359,87 @@ SUBROUTINE ortho_swfc ( npw, normalize_only, m, wfc, swfc, lflag )
   COMPLEX(dp), INTENT(INOUT) :: wfc (npwx*npol,m)
   COMPLEX(dp), INTENT(INOUT) :: swfc(npwx*npol,m)
   LOGICAL, INTENT(IN) :: lflag
-
+  !
+  ! ... local variables
+  !
   COMPLEX(DP) :: temp 
   COMPLEX(DP) , ALLOCATABLE ::  work (:,:), overlap (:,:)
   REAL(DP) , ALLOCATABLE :: e (:)
+  COMPLEX(DP) , ALLOCATABLE ::  s(:,:)
+  !$acc declare device_resident(work, overlap, e, s)
   INTEGER :: i, j, k, ipol
-
-  ALLOCATE (overlap( m , m))    
-  ALLOCATE (work   ( m , m))    
-  ALLOCATE (e      ( m))    
+  !
+  ALLOCATE (overlap(m,m), work(m,m), e(m), s(m,m))
   ! 
+  !$acc kernels
   overlap(:,:) = (0.d0,0.d0)
   work(:,:) = (0.d0,0.d0)
+  !$acc end kernels
   !
   ! calculate overlap matrix
   !
   IF (noncolin) THEN
-     CALL zgemm ('c', 'n', m, m, npwx*npol, (1.d0, 0.d0), wfc, &
+     !$acc host_data use_device(wfc, swfc, overlap)
+     CALL MYZGEMM ('c', 'n', m, m, npwx*npol, (1.d0, 0.d0), wfc, &
           npwx*npol, swfc, npwx*npol, (0.d0,0.d0), overlap, m)
+     !$acc end host_data
   ELSE
-     CALL zgemm ('c', 'n', m, m, npw, (1.d0, 0.d0), wfc, &
+     !$acc host_data use_device(wfc, swfc, overlap)
+     CALL MYZGEMM ('c', 'n', m, m, npw, (1.d0, 0.d0), wfc, &
           npwx, swfc, npwx, (0.d0, 0.d0), overlap, m)
+     !$acc end host_data
   END IF
   !
+  !$acc host_data use_device(overlap)
   CALL mp_sum(  overlap, intra_bgrp_comm )
+  !$acc end host_data
   !
   IF ( normalize_only ) THEN
+     !$acc parallel
+     !$acc loop gang
      DO i = 1, m
+        !$acc loop vector
         DO j = i+1, m
            overlap(i,j) = CMPLX(0.d0,0.d0, kind=dp)
            overlap(j,i) = CMPLX(0.d0,0.d0, kind=dp)
         ENDDO
      ENDDO
+     !$acc end parallel
   END IF
   !
   ! find O^(-1/2) (actually, its transpose)
   !
-  CALL cdiagh (m, overlap, m, e, work)
+!civn: ZHEEV not available in cuBLAS/cuSOLVER?
+  IF(use_gpu) THEN
+    !
+    ! s_d = CMPLX(0.d0,0.d0, kind=dp)  ! fused below
+    !$acc kernels
+    s(:,:) = CMPLX(0.d0,0.d0, kind=dp) 
+    DO i = 1, m
+       s(i,i) = CMPLX(1.d0,0.d0, kind=dp)
+    ENDDO
+    !$acc end kernels
+    ! THIS SHOULD BE A SIMPLE CDIAGH (NOT GENERALIZED!) DRIVER NEEDED IN LAXLIB
+    !$acc host_data use_device(overlap, s, e, work)
+    CALL laxlib_cdiaghg_gpu( m, m, overlap, s, m, e, work, me_bgrp, &
+                             root_bgrp, intra_bgrp_comm )
+    !$acc end host_data
+    !
+  ELSE
+    CALL cdiagh (m, overlap, m, e, work)
+  END IF 
   !
+  !$acc parallel loop collapse(2) private(temp)
   DO i = 1, m
-     DO j = i, m
+     DO j = 1, m
+        IF ( j < i ) CYCLE
         temp = (0.d0, 0.d0)
+        !$acc loop seq
         DO k = 1, m
-           temp = temp + work (j, k) * (1.d0/SQRT(e(k))) * CONJG (work (i, k) )
+           temp = temp + work(j,k) * 1.d0/SQRT(e(k)) * CONJG(work(i,k))
         ENDDO
-        overlap (i, j) = temp
-        IF (j.NE.i) overlap (j, i) = CONJG (temp)
+        overlap(i,j) = temp
+        IF (j /= i) overlap(j,i) = CONJG(temp)
      ENDDO
   ENDDO
   !
@@ -381,29 +447,51 @@ SUBROUTINE ortho_swfc ( npw, normalize_only, m, wfc, swfc, lflag )
      !
      ! Save quantities which are needed for 
      ! calculations of Hubbard forces and stress
+     !$acc kernels copyout(overlap_inv)
      eigenval(:) = e(:)
      eigenvect(:,:) = work(:,:)
      overlap_inv(:,:) = overlap(:,:)
+     !$acc end kernels
+     !
+  END IF 
+  !
+  DEALLOCATE( work )
+  !
+  ALLOCATE( work(m, npwx*npol ) )
+  !
+  !$acc kernels
+  work(:,:) = (0.d0,0.d0)
+  !$acc end kernels
+  !
+  IF (lflag) THEN
      !
      ! Transform atomic orbitals WITHOUT the ultrasoft S operator 
      ! O^(-1/2) \psi (note the transposition):
      ! \phi_I = \sum_J O^{-1/2}_JI \phi_J
      !
-     DO i = 1, npw
-        work(:,1) = (0.d0,0.d0)
-        IF (noncolin) THEN
-           DO ipol=1,npol
-              j = i + (ipol-1)*npwx
-              CALL zgemv ('n',m,m,(1.d0,0.d0),overlap, &
-                   m, wfc(j,1), npwx*npol, (0.d0,0.d0),work,1)
-              CALL zcopy (m,work,1,wfc(j,1),npwx*npol)
-           END DO
-        ELSE
-           CALL zgemv ('n', m, m, (1.d0, 0.d0) , overlap, &
-                m, wfc (i, 1) , npwx, (0.d0, 0.d0) , work, 1)
-           CALL zcopy (m, work, 1, wfc (i, 1), npwx)
-        END IF
-     ENDDO
+     IF(noncolin) THEN 
+       !$acc host_data use_device(overlap, wfc, work)
+       CALL MYZGEMM('n', 't', m, npwx*npol, m, (1.d0,0.d0), overlap, m, wfc, npwx*npol, (0.d0,0.d0), work, m )
+       !$acc end host_data
+       !$acc parallel loop collapse(2) 
+       DO i = 1, npwx*npol
+         DO j = 1, m
+           wfc(i,j) = work(j,i)
+         END DO 
+       END DO
+     ELSE
+       !$acc host_data use_device(overlap, wfc, work)
+       CALL MYZGEMM('n', 't', m, npw, m, (1.d0,0.d0), overlap, m, wfc, npwx*npol, (0.d0,0.d0), work, m )
+       !$acc end host_data
+       !$acc parallel loop collapse(2)
+       DO i = 1, npw
+         DO j = 1, m
+           wfc(i,j) = work(j,i)
+         END DO 
+       END DO
+     END IF
+    
+     !
      !
   ELSE
      !
@@ -412,27 +500,31 @@ SUBROUTINE ortho_swfc ( npw, normalize_only, m, wfc, swfc, lflag )
      ! \Sphi_I = \sum_J O^{-1/2}_JI \Sphi_J
      ! FIXME: can be done in a faster way by using wfc as work space 
      !
-     DO i = 1, npw
-        work(:,1) = (0.d0,0.d0)
-        IF (noncolin) THEN
-           DO ipol=1,npol
-              j = i + (ipol-1)*npwx
-              CALL zgemv ('n',m,m,(1.d0,0.d0),overlap, &
-                   m, swfc(j,1), npwx*npol, (0.d0,0.d0),work,1)
-              CALL zcopy (m,work,1,swfc(j,1),npwx*npol)
-           END DO
-        ELSE
-           CALL zgemv ('n', m, m, (1.d0, 0.d0) , overlap, &
-                m, swfc (i, 1) , npwx, (0.d0, 0.d0) , work, 1)
-           CALL zcopy (m, work, 1, swfc (i, 1), npwx)
-        END IF
-     ENDDO
+     IF(noncolin) THEN 
+       !$acc host_data use_device(overlap, swfc, work)
+       CALL MYZGEMM('n', 't', m, npwx*npol, m, (1.d0,0.d0), overlap, m, swfc, npwx*npol, (0.d0,0.d0), work, m )
+       !$acc end host_data 
+       !$acc parallel loop collapse(2)
+       DO i = 1, npwx*npol
+         DO j = 1, m
+           swfc(i,j) = work(j,i)
+         END DO 
+       END DO
+     ELSE
+       !$acc host_data use_device(overlap, swfc, work)
+       CALL MYZGEMM('n', 't', m, npw, m, (1.d0,0.d0), overlap, m, swfc, npwx*npol, (0.d0,0.d0), work, m )
+       !$acc end host_data
+       !$acc parallel loop collapse(2)
+       DO i = 1, npw
+         DO j = 1, m
+           swfc(i,j) = work(j,i)
+         END DO 
+       END DO
+     END IF
      !
   ENDIF
   !
-  DEALLOCATE (overlap)
-  DEALLOCATE (work)
-  DEALLOCATE (e)
+  DEALLOCATE (overlap, work, e, s)
   !
   RETURN
   !      
@@ -446,6 +538,8 @@ SUBROUTINE calculate_doverlap_inv (m, e, work, doverlap, doverlap_inv)
   !! Note, on the input this routine requires dO (not transposed).
   !! The solution is written in a closed form by solving the Lyapunov
   !! equation (a particular case of the Sylvester equation).
+  !! See Eq. (32) in PRB 105, 199901(E) (2022).
+  !! See Eq. (32) in PRB 102, 235159 (2020).
   !! Written by I. Timrov (June 2020)
   !
   USE kinds,       ONLY : DP
@@ -468,6 +562,7 @@ SUBROUTINE calculate_doverlap_inv (m, e, work, doverlap, doverlap_inv)
   ! Local variables
   INTEGER :: m1, m2, m3, m4
   COMPLEX(DP), ALLOCATABLE :: aux(:,:)
+  !$acc declare device_resident(aux)
   !! eigenvectors of the overlap matrix
   !! auxiliary array
   !
@@ -477,12 +572,17 @@ SUBROUTINE calculate_doverlap_inv (m, e, work, doverlap, doverlap_inv)
   ! and put the result back in doverlap
   !
   ! Compute aux = doverlap * work
-  CALL ZGEMM('N','N', m, m, m, (1.d0,0.d0), doverlap, &
+  !$acc host_data use_device(doverlap, work, aux)
+  CALL MYZGEMM('N','N', m, m, m, (1.d0,0.d0), doverlap, &
               m, work, m, (0.d0,0.d0), aux, m)
+  !$acc end host_data
   ! Compute (work^H) * aux
-  CALL ZGEMM('C','N', m, m, m, (1.d0,0.d0), work, &
+  !$acc host_data use_device(work, aux, doverlap)
+  CALL MYZGEMM('C','N', m, m, m, (1.d0,0.d0), work, &
               m, aux, m, (0.d0,0.d0), doverlap, m)
+  !$acc end host_data
   !
+  !$acc parallel loop collapse(2)
   DO m1 = 1, m
      DO m2 = 1, m
         aux(m1,m2) = doverlap(m1,m2) / &
@@ -493,11 +593,15 @@ SUBROUTINE calculate_doverlap_inv (m, e, work, doverlap, doverlap_inv)
   ! Compute work * aux * (work^H)
   !
   ! Compute doverlap = aux * (work^H)
-  CALL ZGEMM('N','C', m, m, m, (1.d0,0.d0), aux, &
+  !$acc host_data use_device(aux, work, doverlap)
+  CALL MYZGEMM('N','C', m, m, m, (1.d0,0.d0), aux, &
               m, work, m, (0.d0,0.d0), doverlap, m)
+  !$acc end host_data
   ! Compute doverlap_inv = work * doverlap
-  CALL ZGEMM('N','N', m, m, m, (-1.d0,0.d0), work, &
+  !$acc host_data use_device(work, doverlap, doverlap_inv)
+  CALL MYZGEMM('N','N', m, m, m, (-1.d0,0.d0), work, &
               m, doverlap, m, (0.d0,0.d0), doverlap_inv, m)
+  !$acc end host_data
   !
   DEALLOCATE (aux)
   !

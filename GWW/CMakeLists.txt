@@ -72,6 +72,7 @@ set(src_pw4gww
     pw4gww/cgsolve_all_gamma.f90
     pw4gww/gww_realus.f90
     pw4gww/operator_1_vp.f90
+    pw4gww/operator_debug.f90
     pw4gww/lanczos_chains.f90
     pw4gww/convergence.f90
     pw4gww/easy_gw.f90)
@@ -404,17 +405,7 @@ target_link_libraries(qe_gww_pw4gww_exe
 
 ###########################################################
 
-qe_install_targets(
-    # Libraries
-    qe_gww
-    qe_gww_pw4gww
-    qe_gww_bse
-    qe_gww_head
-    qe_gww_minpack
-    qe_gww_simple
-    qe_gww_simplebse
-    qe_gww_simpleip
-    # Executables
+set(GWW_EXE_TARGETS
     qe_gww_pw4gww_exe
     qe_gww_util_grap_exe
     qe_gww_util_abcoefftoeps_exe
@@ -426,3 +417,22 @@ qe_install_targets(
     qe_gww_simple_exe
     qe_gww_simple_bse_exe
     qe_gww_simple_ip_exe)
+
+qe_install_targets(
+    # Libraries
+    qe_gww
+    qe_gww_pw4gww
+    qe_gww_bse
+    qe_gww_head
+    qe_gww_minpack
+    qe_gww_simple
+    qe_gww_simplebse
+    qe_gww_simpleip
+    # Executables
+    ${GWW_EXE_TARGETS})
+
+add_custom_target(gwl
+    DEPENDS
+        ${GWW_EXE_TARGETS}
+    COMMENT
+        "GW with Lanczos chains")

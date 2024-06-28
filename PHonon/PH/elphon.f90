@@ -51,11 +51,11 @@ SUBROUTINE elphon()
   !! dvscfin for all modes. Used when doing dvscf_r2q interpolation.
   COMPLEX(DP), POINTER :: dvscfin(:,:,:), dvscfins (:,:,:)
   COMPLEX(DP), allocatable :: phip (:, :, :, :)
-  
+
   INTEGER :: ntyp_, nat_, ibrav_, nspin_mag_, mu, nu, na, nb, nta, ntb, nqs_
   REAL(DP) :: celldm_(6), w1
   CHARACTER(LEN=3) :: atm(ntyp)
-   
+
   CALL start_clock ('elphon')
 
   if(dvscf_star%basis.eq.'cartesian') then
@@ -144,7 +144,7 @@ SUBROUTINE elphon()
         CALL read_dyn_mat_param(fildyn, ntyp_, nat_)
         IF ( ntyp_ /= ntyp .OR. nat_ /= nat ) &
            CALL errore('elphon','uncorrect nat or ntyp',1)
-          
+
         CALL read_dyn_mat_header(ntyp, nat, ibrav_, nspin_mag_, &
                  celldm_, at, bg, omega, atm, amass, tau, ityp, &
                  m_loc, nqs_)
@@ -158,7 +158,7 @@ SUBROUTINE elphon()
         !  Diagonalize the dynamical matrix
         !
 
-        
+
         DO i=1,3
            do na=1,nat
               nta = ityp (na)
@@ -185,9 +185,9 @@ SUBROUTINE elphon()
               dyn (mu, nu) = dyn (mu, nu) / SQRT ( amu_ry * amass (ityp (na) ) )
            ENDDO
         ENDDO
-        
+
         CALL read_dyn_mat_tail(nat)
-  
+
         deallocate( phip )
      ENDIF
      !
@@ -394,13 +394,16 @@ SUBROUTINE elphel (irr, npe, imode0, dvscfins)
   ALLOCATE (aux2(npwx*npol, nbnd))
   el_ph_mat_rec=(0.0_DP,0.0_DP)
   aux2(:, :) = (0.0_DP, 0.0_DP)
+  !
+  !$acc enter data create(dvscfins(1:dffts%nnr, 1:nspin_mag, 1:npe), aux2(1:npwx*npol, 1:nbnd))
+  !
   CALL apply_dpot_allocate()
   !
   ! DFPT+U case
   !
   IF (lda_plus_u .AND. .NOT.trans) THEN
      !
-     ! Allocate and read dnsscf_all_modes from file 
+     ! Allocate and read dnsscf_all_modes from file
      !
      ALLOCATE (dnsscf_all_modes(2*Hubbard_lmax+1, 2*Hubbard_lmax+1, nspin, nat, nmodes))
      dnsscf_all_modes = (0.d0, 0.d0)
@@ -408,10 +411,10 @@ SUBROUTINE elphel (irr, npe, imode0, dvscfins)
      IF (ionode) READ(iundnsscf,*) dnsscf_all_modes
      CALL mp_bcast(dnsscf_all_modes, ionode_id, world_comm)
      REWIND(iundnsscf)
-     !  
+     !
      ! Check whether the re-read is correct
      !
-     IF (iverbosity==1) CALL elphel_read_dnsscf_check() 
+     IF (iverbosity==1) CALL elphel_read_dnsscf_check()
      !
      ! Allocate dnsscf
      !
@@ -482,7 +485,7 @@ SUBROUTINE elphel (irr, npe, imode0, dvscfins)
                  !
                  ! DFPT+U: calculate the bare derivative of the Hubbard potential in el-ph
                  !
-                 IF (lda_plus_u) CALL dvqhub_barepsi_us (ik, u(1,mode)) 
+                 IF (lda_plus_u) CALL dvqhub_barepsi_us (ik, u(1,mode))
                  !
               ELSE
                  IF (okvan) THEN
@@ -604,6 +607,9 @@ SUBROUTINE elphel (irr, npe, imode0, dvscfins)
   DEALLOCATE(el_ph_mat_rec)
   !
   CALL apply_dpot_deallocate()
+  !
+  !$acc exit data delete(dvscfins, aux2)
+  !
   DEALLOCATE (elphmat)
   DEALLOCATE (aux2)
   !
@@ -621,7 +627,7 @@ END SUBROUTINE elphel
 !------------------------------------------------------------------------
 SUBROUTINE elphel_read_dnsscf_check()
   !
-  ! DFPT+U: This subroutine checks whether dnsscf_all_modes was 
+  ! DFPT+U: This subroutine checks whether dnsscf_all_modes was
   !         read correctly from file.
   !
   USE kinds,      ONLY : DP
@@ -687,8 +693,8 @@ SUBROUTINE elphel_read_dnsscf_check()
      ENDDO
   ENDDO
   WRITE(stdout,*)
-  ! 
-  DEALLOCATE(dnsscf_all_modes_cart) 
+  !
+  DEALLOCATE(dnsscf_all_modes_cart)
   !
   RETURN
   !
@@ -795,9 +801,7 @@ SUBROUTINE elphsum ( )
   CALL start_clock('elphsum')
 
   elph_dir='elph_dir/'
-  IF (ionode) INQUIRE(file=TRIM(elph_dir), EXIST=exst)
-  CALL mp_bcast(exst, ionode_id, intra_image_comm) 
-  IF (.NOT.exst) CALL create_directory( elph_dir )
+  CALL create_directory( elph_dir )
   WRITE (6, '(5x,"electron-phonon interaction  ..."/)')
   ngauss1 = 0
 
@@ -814,7 +818,7 @@ SUBROUTINE elphsum ( )
      nksqtot=nksq
      xk_collect(:,1:nks) = xk(:,1:nks)
      el_ph_mat_collect => el_ph_mat
-  ELSE  
+  ELSE
 !
 !  pools, allocate new variables and collect the results. All the rest
 !  remain unchanged.
@@ -870,7 +874,7 @@ SUBROUTINE elphsum ( )
   ! not yet implemented.
   !
   nksfit_dist  = ( nksfit / npool )
-  rest = ( nksfit - nksfit_dist * npool ) 
+  rest = ( nksfit - nksfit_dist * npool )
   IF ( ( my_pool_id + 1 ) <= rest ) nksfit_dist = nksfit_dist + 1
   kunit_save=kunit
   kunit=1
@@ -1001,7 +1005,7 @@ SUBROUTINE elphsum ( )
                     itemp2 = sBZ(nn)
                     call symm ( g0, u, xq, s, itemp2, rtau, irt, &
                          at, bg, nat)
-                    if (ispin==2) nn=nn+nkBZ 
+                    if (ispin==2) nn=nn+nkBZ
                     g2(nn,:,:) = g0(:,:)
                  enddo
               enddo ! k
@@ -1031,7 +1035,7 @@ SUBROUTINE elphsum ( )
                           + exp(-((effit1-etk)**2 + (effit1-etq)**2)/degauss1**2)*noint(ik)
                  enddo
                  gf(ipert,jpert,isig) = gf(ipert,jpert,isig) + &
-                      ctemp * wqa / (degauss1**2) / pi 
+                      ctemp * wqa / (degauss1**2) / pi
               enddo ! isig
               enddo ! ispin
            enddo    ! ipert
@@ -1098,7 +1102,7 @@ SUBROUTINE elphsum ( )
   enddo
   ! Isaev: save files in suitable format for processing by lambda.x
    name=TRIM(elph_dir)// 'elph.inp_lambda.' //TRIM(int_to_char(current_iq))
-                                             
+
   IF (ionode) THEN
      open(unit=12, file=TRIM(name), form='formatted', status='unknown', &
                                     iostat=ios)
@@ -1249,7 +1253,7 @@ SUBROUTINE elphsum_simple
      WRITE (iuelph, '(3f15.8,2i8)') xq, el_ph_nsigma, 3 * nat
      WRITE (iuelph, '(6e14.6)') (w2 (nu) , nu = 1, nmodes)
   ENDIF
-  
+
 
   ngauss1=0
   DO isig = 1, el_ph_nsigma
@@ -1264,7 +1268,7 @@ SUBROUTINE elphsum_simple
      ! Note that the weights of k+q points must be set to zero for the
      ! following call to yield correct results
      !
-      
+
      ef1 = efermig (et, nbnd, nks, nelec, wk, degauss1, el_ph_ngauss, 0, isk)
      dosef = dos_ef (el_ph_ngauss, degauss1, ef1, et, wk, nks, nbnd)
      ! N(Ef) is the DOS per spin, not summed over spin
@@ -1272,9 +1276,9 @@ SUBROUTINE elphsum_simple
      !
      ! Sum over bands with gaussian weights
      !
-     
+
      DO ik = 1, nksq
-        
+
         !
         ! see subroutine elphel for the logic of indices
         !
@@ -1298,9 +1302,9 @@ SUBROUTINE elphsum_simple
               phase_space = phase_space+weight
            ENDDO
         ENDDO
-        
+
      ENDDO
-     
+
      ! el_ph_sum(mu,nu)=\sum_k\sum_{i,j}[ <psi_{k+q,j}|dvscf_q(mu)*psi_{k,i}>
      !                                  x <psi_{k+q,j}|dvscf_q(nu)*psi_{k,i}>
      !                                  x \delta(e_{k,i}-Ef) \delta(e_{k+q,j}
@@ -1314,7 +1318,7 @@ SUBROUTINE elphsum_simple
      !
      ! symmetrize el_ph_sum(mu,nu) : it transforms as the dynamical matrix
      !
-     
+
      CALL symdyn_munu_new (el_ph_sum, u, xq, s, invs, rtau, irt,  at, &
           bg, nsymq, nat, irotmq, minus_q)
      !
@@ -1326,7 +1330,7 @@ SUBROUTINE elphsum_simple
         WRITE (iuelph, 9000) degauss1, ngauss1
         WRITE (iuelph, 9005) dosef, ef1 * rytoev
      ENDIF
-     
+
      DO nu = 1, nmodes
         gamma = 0.d0
         DO mu = 1, 3 * nat
@@ -1362,7 +1366,7 @@ SUBROUTINE elphsum_simple
         IF (qplot) gamma_disp(nu,isig,current_iq) = gamma * ry_to_gHz
      ENDDO
   ENDDO
-  
+
 
 9000 FORMAT(5x,'Gaussian Broadening: ',f7.3,' Ry, ngauss=',i4)
 9005 FORMAT(5x,'DOS =',f10.6,' states/spin/Ry/Unit Cell at Ef=', &
@@ -1373,16 +1377,14 @@ SUBROUTINE elphsum_simple
   !
   IF (ionode) CLOSE (unit = iuelph)
   RETURN
-  
 
-     
+
+
      !          call star_q(x_q(1,iq), at, bg, nsym , s , invs , nq, sxq, &
      !               isq, imq, .FALSE. )
-     
+
 
 END SUBROUTINE elphsum_simple
-
-
 
 subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_point_crystal)
   use kinds, only: dp
@@ -1391,7 +1393,7 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
     logical, intent(out) :: is_in_grid
     integer :: i, j, k
     real(dp) :: diff, transl(3)
-    
+
     is_in_grid = .false.
 
     do i = -2,2
@@ -1408,7 +1410,7 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
         end do
       end do
     end do
-    
+
     return
   end subroutine is_point_translational_equivalent
   !
@@ -1416,7 +1418,7 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
   !
   subroutine elphfil_phoebe(iq, xk_collect, ikks_collect, et_collect, &
        el_ph_mat_collect, wk_collect)
-    USE constants, ONLY : ry_to_thz, ry_to_cmm1, amu_ry    
+    USE constants, ONLY : ry_to_thz, ry_to_cmm1, amu_ry
     use constants, only: tpi
     use io_files, only: tmp_dir, prefix
     USE cell_base, ONLY : alat, at, bg
@@ -1483,7 +1485,7 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
 
     ! Note: this subroutine is called n_q^irr times
     ! i.e. the number of irreducible q-points used during the phonon run
-    
+
     if ( .not. ionode ) return
 
     if ( first ) then
@@ -1582,7 +1584,7 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
     ! (like k/q meshes, crystal, ...)
 
     if ( iq == 1 ) then
- 
+
       ! Note: this unfolding doesn't work with spin
       allocate(energies_unfolded(nbnd,nk))
       energies_unfolded = 0.
@@ -1640,7 +1642,7 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     ! Reconstructs the current star of qpoints
-    ! 
+    !
     call star_q1(q_phonon_cartesian, at, bg, nsym, s, invs, n_star, &
          q_star_cartesian, isq, imq, .false., t_rev)
     ! convert q_star to crystal coords.
@@ -1802,8 +1804,8 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
     end do
 
 
-    
-    
+
+
     !-------------------------------------------------------------------
     ! We miss a couple of things to the el_ph_mat matrix
     ! 1) ph.x computes the perturbation DeltaV by moving irreducible atoms
@@ -1822,7 +1824,7 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
     ! Now I want to rotate it to cartesian coordinates
     ! pattern rotate
     allocate(tmp_el_ph_mat(nbnd, nbnd, nksqtot, nmodes))
-    tmp_el_ph_mat = cmplx(0.,0.,kind=dp)    
+    tmp_el_ph_mat = cmplx(0.,0.,kind=dp)
     do i_pattern = 1,nmodes
         do i_mode = 1,nmodes
         tmp_el_ph_mat(:,:,:,i_mode) = tmp_el_ph_mat(:,:,:,i_mode) &
@@ -1849,7 +1851,7 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
     end do
     deallocate(tmp_el_ph_mat)
 
-    
+
     !----------------------------------------------------------------------------
     ! Here we start the coupling unfolding
     ! we use g(Sk,q) = g(k,S^{-1}q) to unfold the coupling
@@ -1862,7 +1864,7 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
 
     if ( iq == 1 ) then
       ! the q=0 is a a special case, because we have only 1 point in the star of q,
-      ! but all the symmetries of the crystal leave q=0 invariant.      
+      ! but all the symmetries of the crystal leave q=0 invariant.
       !
       ! Note: nksqtot is the list of kpoints computed by ph.x at current q-point
       ! For q=0, nksqtot runs over irreducible points only
@@ -1886,7 +1888,7 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
               ! using time reversal (H^+=H), you can show that
               ! ( <k+q | dV_q | k> )^* = <-k-q | dV_-q | -k>
               gq_coupling(:,:,ik_rotated,:,iq) = conjg(el_ph_mat_cartesian(:,:,iksq,:))
-            else 
+            else
               gq_coupling(:,:,ik_rotated,:,iq) = el_ph_mat_cartesian(:,:,iksq,:)
             end if
           end if
@@ -1898,27 +1900,27 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
       do iq_star = 1,n_star
         isym = list_of_isym(iq_star) ! index of symmetry that maps q to q*: S.qIrr = qRed
         add_time_reversal = list_of_time_reversal(iq_star)
-        
+
         rotation = s(:,:,isym)
         inv_rotation = transpose(rotation)
-        
+
         ! Verify this is a symmetry
         ! q_rotated = matmul(rotation, q_phonon_crystal) ! q_phonon is the irred q-point
         ! if ( add_time_reversal ) q_rotated = - q_rotated
-        ! call find_index_in_full_list(iq_rotated, q_rotated, nq1, nq2, nq3, .false.)        
-        
+        ! call find_index_in_full_list(iq_rotated, q_rotated, nq1, nq2, nq3, .false.)
+
         !
         ! Note: nksqtot is the list of kpoints computed by ph.x at current q-point
         ! For q=0, nksqtot runs over irreducible points only
         !
 
         do iksq = 1,nksqtot ! loop over the k points in the MESH
-          
+
           ! (xk_collect(3, nkstot) list of k and k+q point coordinates
           ik_phonon = ikks_collect(iksq) ! index of k-vectors in xk_collect (that also has k+q)
           ! ik_phonon = iksq * 2 - 1 ! this is the same as using ikks_collect
           ! this is because the list of xk_collect points is like k(1), k+q(1), k(2), k+q(2), ...
-          
+
           k_phonon_crystal = xk_collect(:,ik_phonon) ! k wavevector in cartesian coordinates
           CALL cryst_to_cart(1, k_phonon_crystal, at, -1) ! in crystal coords
           !
@@ -1928,7 +1930,7 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
             k_rotated = - k_rotated
             q_rotated = - q_rotated
           end if
-          k_rotated(:) = k_rotated(:) - nint( k_rotated(:) ) ! fold in 1st BZ 
+          k_rotated(:) = k_rotated(:) - nint( k_rotated(:) ) ! fold in 1st BZ
           q_rotated(:) = q_rotated(:) - nint( q_rotated(:) )
           !
           ! Note that we must use the same symmetry operation for both k and q
@@ -1944,12 +1946,12 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
           if ( .not. q_in_the_list ) then
             call errore("phoebe", "unexpected q rotation")
           end if
-          
+
           !
           ! if both points rotate and stay on the grid
           ! then we can assign values to the rotated g coupling
           ! if they are not rotating, we have 0 el-ph coupling
-          if ( k_in_the_list .and. q_in_the_list ) then            
+          if ( k_in_the_list .and. q_in_the_list ) then
             ! index of point in the full grid
             call find_index_in_full_list(ik_rotated, k_rotated, nk1, nk2, nk3, .false.)
 
@@ -1957,7 +1959,7 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
               ! using time reversal (H^+=H), you can show that
               ! ( <k+q | dV_q | k> )^* = <-k-q | dV_-q | -k>
               gq_coupling(:,:,iksq,:,iq_star) = conjg(el_ph_mat_cartesian(:,:,ik_rotated,:))
-            else 
+            else
               gq_coupling(:,:,iksq,:,iq_star) = el_ph_mat_cartesian(:,:,ik_rotated,:)
             end if
           end if
@@ -1973,7 +1975,7 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
       ! which can be compared with the ones in silicon.dyn* files
 
       allocate(Dq(nmodes,nmodes))
-      allocate(test_vec(nmodes,nmodes))    
+      allocate(test_vec(nmodes,nmodes))
       do iq_star = 1,n_star
         Dq = cmplx(0.,0.,kind=dp)
         do ii = 1,nmodes
@@ -1991,12 +1993,12 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
         Dq = matmul(Dq,conjg(transpose(test_vec))) * (amass(1)*amu_ry)**2
         ! Note: assuming mono-species for test!
         !
-        isym = list_of_isym(iq_star) 
+        isym = list_of_isym(iq_star)
         !
         ! print*, q_star_cartesian(:,iq_star)
         ! print*, matmul(my_s(:,:,isym),q_star_cartesian(:,1))
         ! print*, isym, ft(:,isym)
-        !      
+        !
         do i1 = 1,nat
           do i2 = 1,nat
             print*, i1, i2
@@ -2072,9 +2074,333 @@ subroutine is_point_translational_equivalent(is_in_grid, q_reference_crystal, q_
 
     return
   end subroutine elphfil_phoebe
-  !
+
+!------------------------------------------------------------------------
+!
+!------------------------------------------------------------------------
+SUBROUTINE elph_prt()
   !-----------------------------------------------------------------------
+  !!
+  !! Print in the output the |g| vertex for all n,n' and modes in meV and do average
+  !! on degenerate states.
+  !!
+  !! 06/2018 - Written by S. Ponc\'e and C. Verdi based on elphsum subroutine
+  !! 06/2021 - Rewritten by H. Lee based on the previous version
+  !! 06/2023 - Merged to PH/ by S. Ponc\'e
+  !!
+  USE kinds,       ONLY : DP
+  USE constants,   ONLY : rytoev
+  USE ions_base,   ONLY : nat
+  USE klist,       ONLY : xk
+  USE wvfct,       ONLY : nbnd, et
+  USE el_phon,     ONLY : el_ph_mat, kx, ky, kz
+  USE modes,       ONLY : u, nmodes
+  USE dynmat,      ONLY : dyn,w2
+  USE io_global,   ONLY : stdout, ionode
+  USE mp,          ONLY : mp_sum
+  USE mp_pools,    ONLY : npool
+  USE mp_images,   ONLY : intra_image_comm, me_image, nproc_image, root_image
+  USE mp_bands,    ONLY : root_bgrp, me_bgrp
+  USE qpoint,      ONLY : nksq, ikks, ikqs, xq
+  USE parallel_include
   !
+  IMPLICIT NONE
+  !
+  LOGICAL :: found
+  !
+  INTEGER :: ik, ikk, ikq, ibnd, jbnd, pbnd, nu, mu, vu, ierr, istatus
+  INTEGER :: nksq2, ikk2, ikq2, nkq2, ik1, ik2, ipert, jpert, n
+  !
+  REAL(DP), PARAMETER :: ryd2mev  = rytoev * 1.0E3_DP
+  REAL(DP), PARAMETER :: eps = 0.01/ryd2mev
+  REAL(DP) :: gamma, g2, w, w_1, w_2
+  REAL(DP) :: kpoint(3)
+  REAL(DP) :: epc(nbnd, nbnd, 3 * nat)
+  REAL(DP) :: epc_sym(nbnd, nbnd, 3 * nat)
+  REAL(DP), ALLOCATABLE :: et2(:, :)
+  !
+  COMPLEX(DP) :: el_ph_sum(3 * nat, 3 * nat)
+  COMPLEX(DP) :: el_ph_sum_aux(3 * nat, 3 * nat)
+  COMPLEX(DP), ALLOCATABLE :: el_ph_mat2(:, :, :, :)
+  !
+  CALL start_clock('elphsum2')
+  !
+  kpoint = (/ kx, ky, kz /)
+  !
+  WRITE(stdout, '(5x,/"electron-phonon interaction  ..."/)')
+  !
+  found = .FALSE.
+  DO ik = 1, nksq
+    IF (ANY(ABS(xk(:, ikks(ik))-kpoint(:)) > 1.0E-6_DP)) CYCLE
+    found = .TRUE.
+    ik1 = ik
+    ikk = ikks(ik)
+    ikq = ikqs(ik)
+  ENDDO
+  !
+  ierr = 0
+  IF (found) THEN
+    ierr = 1
+  ENDIF
+  CALL mp_sum(ierr, intra_image_comm)
+  IF (ierr == 0) CALL errore('elphsum2', 'kpoint not found', 1)
+  !
+#if defined(__MPI)
+  IF ((npool == 1) .AND. ionode) THEN
+    ik2 = ik1
+    ikk2 = ikk
+    ikq2 = ikq
+    nksq2 = nksq
+    ALLOCATE(el_ph_mat2(nbnd, nbnd, nksq2, 3 * nat))
+    el_ph_mat2 = el_ph_mat
+    nkq2 = SIZE(et, 2)
+    ALLOCATE(et2(nbnd, nkq2))
+    et2 = et
+  ELSE
+    IF (found .AND. (me_bgrp == root_bgrp) .AND. (.NOT. ionode)) THEN
+      CALL MPI_SEND(ik1, 1, MPI_INTEGER, root_image, 0, intra_image_comm, ierr)
+      CALL MPI_SEND(ikk, 1, MPI_INTEGER, root_image, nproc_image, &
+                    intra_image_comm, ierr)
+      CALL MPI_SEND(ikq, 1, MPI_INTEGER, root_image, 2 * nproc_image, &
+                    intra_image_comm, ierr)
+      CALL MPI_SEND(nksq, 1, MPI_INTEGER, root_image, 3 * nproc_image, &
+                    intra_image_comm, ierr)
+      CALL MPI_SEND(el_ph_mat, nbnd * nbnd * nksq * 3 * nat, MPI_DOUBLE_COMPLEX, &
+                    root_image, 4 * nproc_image, intra_image_comm, ierr)
+      CALL MPI_SEND(SIZE(et, 2), 1, MPI_INTEGER, root_image, 5 * nproc_image, &
+                    intra_image_comm, ierr)
+      CALL MPI_SEND(et, nbnd * SIZE(et, 2), MPI_DOUBLE_PRECISION, root_image, &
+                    6 * nproc_image, intra_image_comm, ierr)
+    ELSEIF (ionode) THEN
+      IF (.NOT. found) THEN
+        CALL MPI_RECV(ik2, 1, MPI_INTEGER, MPI_ANY_SOURCE, 0, intra_image_comm, &
+                      istatus, ierr )
+        CALL MPI_RECV(ikk2, 1, MPI_INTEGER, MPI_ANY_SOURCE, nproc_image, &
+                      intra_image_comm, istatus, ierr )
+        CALL MPI_RECV(ikq2, 1, MPI_INTEGER, MPI_ANY_SOURCE, 2 * nproc_image, &
+                      intra_image_comm, istatus, ierr )
+        CALL MPI_RECV(nksq2, 1, MPI_INTEGER, MPI_ANY_SOURCE, 3 * nproc_image, &
+                      intra_image_comm, istatus, ierr )
+        ALLOCATE(el_ph_mat2(nbnd, nbnd, nksq2, 3 * nat))
+        CALL MPI_RECV(el_ph_mat2, nbnd * nbnd * nksq2 * 3 * nat, MPI_DOUBLE_COMPLEX, &
+                      MPI_ANY_SOURCE, 4 * nproc_image, intra_image_comm, istatus, ierr )
+        CALL MPI_RECV(nkq2, 1, MPI_INTEGER, MPI_ANY_SOURCE, 5 * nproc_image, &
+                      intra_image_comm, istatus, ierr )
+        ALLOCATE(et2(nbnd, nkq2))
+        CALL MPI_RECV(et2, nbnd * nkq2, MPI_DOUBLE_PRECISION, MPI_ANY_SOURCE, &
+                      6 * nproc_image, intra_image_comm, istatus, ierr )
+      ELSE
+        ik2 = ik1
+        ikk2 = ikk
+        ikq2 = ikq
+        nksq2 = nksq
+        ALLOCATE(el_ph_mat2(nbnd, nbnd, nksq2, 3 * nat))
+        el_ph_mat2 = el_ph_mat
+        nkq2 = SIZE(et, 2)
+        ALLOCATE(et2(nbnd, nkq2))
+        et2 = et
+      ENDIF
+    ENDIF
+  ENDIF
+#else
+  ik2 = ik1
+  ikk2 = ikk
+  ikq2 = ikq
+  nksq2 = nksq
+  ALLOCATE(el_ph_mat2(nbnd, nbnd, nksq2, 3 * nat))
+  el_ph_mat2 = el_ph_mat
+  nkq2 = SIZE(et, 2)
+  ALLOCATE(et2(nbnd, nkq2))
+  et2 = et
+#endif
+  !
+  IF (ionode) THEN
+    !
+    DO ibnd = 1, nbnd
+      DO jbnd = 1, nbnd
+        !
+        DO jpert = 1, 3 * nat
+          DO ipert = 1, 3 * nat
+            el_ph_sum(ipert, jpert) = CONJG(el_ph_mat2(jbnd, ibnd, ik2, ipert)) * &
+                                            el_ph_mat2(jbnd, ibnd, ik2, jpert)
+          ENDDO
+        ENDDO
+        !
+        ! from pert to cart
+        !
+        CALL dyn_pattern_to_cart(nat, u, el_ph_sum, el_ph_sum_aux)
+        CALL compact_dyn(nat, el_ph_sum, el_ph_sum_aux)
+        !
+        DO nu = 1, nmodes
+          gamma = 0.d0
+          DO vu = 1, 3 * nat
+            DO mu = 1, 3 * nat
+              gamma = gamma + REAL(CONJG(dyn(mu, nu)) * el_ph_sum(mu, vu) &
+                      * dyn(vu, nu))
+            ENDDO
+          ENDDO
+          gamma = gamma / 2.d0
+          !
+          ! the factor 2 comes from the factor sqrt(hbar/2/M/omega) that
+          ! appears
+          ! in the definition of the electron-phonon matrix element g
+          ! The sqrt(1/M) factor is actually hidden into the normal modes
+          ! we still need to divide by the phonon frequency in Ry
+          !
+          IF (w2(nu) .GT. 0.d0) THEN
+            w = DSQRT(w2(nu))
+            gamma = gamma / w
+          ELSE
+            w = DSQRT(-w2(nu))
+            gamma = 0.d0
+          ENDIF
+          !
+          IF (gamma .LT. 0.d0) gamma = 0.d0
+          !
+          gamma = DSQRT(gamma)
+          !
+          ! gamma = |g| [Ry]
+          !
+          epc(ibnd, jbnd, nu) = gamma
+          !
+        ENDDO
+        !
+      ENDDO
+    ENDDO
+    !
+    ! HERE WE "SYMMETRIZE": actually we simply take the averages over
+    ! degenerate states, it is only a convention because g is gauge-dependent!
+    !
+    ! first the phonons
+    !
+    DO jbnd = 1, nbnd
+      DO ibnd = 1, nbnd
+        !
+        DO nu = 1, nmodes
+          !
+          w_1 = DSQRT(ABS(w2(nu)))
+          g2 = 0.d0
+          n = 0
+          !
+          DO mu = 1, nmodes
+            !
+            w_2 = DSQRT(ABS(w2(mu)))
+            !
+            IF (ABS(w_2 - w_1) .LT. eps) THEN
+              n = n + 1
+              g2 = g2 + epc(ibnd, jbnd, mu) * epc(ibnd, jbnd, mu)
+            ENDIF
+            !
+          ENDDO
+          !
+          g2 = g2 / FLOAT(n)
+          epc_sym(ibnd, jbnd, nu) = DSQRT(g2)
+          !
+        ENDDO
+        !
+      ENDDO
+    ENDDO
+    epc = epc_sym
+    !
+    ! then the k electrons
+    !
+    DO nu  = 1, nmodes
+      DO jbnd = 1, nbnd
+        !
+        DO ibnd = 1, nbnd
+          !
+          w_1 = et2(ibnd, ikk2)
+          g2 = 0.d0
+          n  = 0
+          !
+          DO pbnd = 1, nbnd
+            !
+            w_2 = et2(pbnd, ikk2)
+            !
+            IF (ABS(w_2 - w_1) .LT. eps) THEN
+              n = n + 1
+              g2 = g2 + epc(pbnd, jbnd, nu) * epc(pbnd, jbnd, nu)
+            ENDIF
+            !
+          ENDDO
+          !
+          g2 = g2 / FLOAT(n)
+          epc_sym(ibnd, jbnd, nu) = DSQRT(g2)
+          !
+        ENDDO
+        !
+      ENDDO
+    ENDDO
+    epc = epc_sym
+    !
+    ! and finally the k+q electrons
+    !
+    DO nu = 1, nmodes
+      DO ibnd = 1, nbnd
+        !
+        DO jbnd = 1, nbnd
+          !
+          w_1 = et2(jbnd, ikq2)
+          g2 = 0.d0
+          n  = 0
+          !
+          DO pbnd = 1, nbnd
+            !
+            w_2 = et2(pbnd, ikq2)
+            !
+            IF (ABS(w_2 - w_1) .LT. eps) THEN
+              n = n + 1
+              g2 = g2 + epc(ibnd, pbnd, nu) * epc(ibnd, pbnd, nu)
+            ENDIF
+            !
+          ENDDO
+          !
+          g2 = g2 / FLOAT(n)
+          epc_sym(ibnd, jbnd, nu) = DSQRT(g2)
+          !
+        ENDDO
+        !
+      ENDDO
+    ENDDO
+    epc = epc_sym
+    !
+    WRITE(stdout, '(5x, a)') ' Electron-phonon vertex |g| (meV)'
+    WRITE(stdout, '(/5x, "q coord.: ", 3f12.7)') xq
+    WRITE(stdout, '(5x, "k coord.: ", 3f12.7)') kpoint
+    WRITE(stdout, '(5x, a)') ' ibnd     jbnd     imode   enk[eV]    enk+q[eV]  omega(q)[meV]   |g|[meV]'
+    WRITE(stdout, '(5x, a)') REPEAT('-', 78)
+    !
+    DO ibnd = 1, nbnd
+      DO jbnd = 1, nbnd
+        DO nu = 1, nmodes
+          !
+          IF (w2(nu) .GT. 0.d0) THEN
+            w = DSQRT(w2(nu))
+          ELSE
+            w = DSQRT(-w2(nu))
+          ENDIF
+          !
+          WRITE(stdout, '(3i9, 2f12.4, 1f20.10, 1e20.10)') ibnd, jbnd, nu, &
+                rytoev * et2(ibnd, ikk2), rytoev * et2(jbnd, ikq2), &
+                ryd2mev * w, ryd2mev * epc(ibnd, jbnd, nu)
+          !
+        ENDDO
+      ENDDO
+    ENDDO
+    !
+    WRITE(stdout, '(5x, a/)') REPEAT('-', 78)
+    !
+  ENDIF
+  !
+  CALL stop_clock('elphsum2')
+  !
+  RETURN
+  !
+!-----------------------------------------------------------------------
+END SUBROUTINE elph_prt
+!-----------------------------------------------------------------------
+!
+!-----------------------------------------------------------------------
 SUBROUTINE elphfil_epa(iq)
   !-----------------------------------------------------------------------
   !! Writes electron-phonon matrix elements to a file
@@ -2271,7 +2597,7 @@ SUBROUTINE elphfil_epa(iq)
   RETURN
 
 END SUBROUTINE elphfil_epa
-   
+
 !----------------------------------------------------------------------------
 SUBROUTINE ipoolcollect( length, nks, f_in, nkstot, f_out )
   !----------------------------------------------------------------------------
@@ -2369,7 +2695,7 @@ SUBROUTINE jpoolcollect( length, nks, f_in, nkstot, f_out )
   RETURN
   !
 END SUBROUTINE jpoolcollect
-   
+
 !-----------------------------------------------------------------------
 FUNCTION dos_ef (ngauss, degauss, ef, et, wk, nks, nbnd)
   !-----------------------------------------------------------------------

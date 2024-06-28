@@ -55,7 +55,7 @@ PROGRAM pwscf
   LOGICAL, EXTERNAL :: matches
   !! checks if first string is contained in the second
   !
-  CALL mp_startup( start_images=.TRUE. )
+  CALL mp_startup( start_images=.TRUE., images_only=.TRUE. )
   !
   !
   CALL environment_start( 'PWSCF' )
@@ -97,7 +97,5 @@ PROGRAM pwscf
   CALL laxlib_end()
   CALL stop_run( exit_status )
   CALL do_stop( exit_status )
-  !
-  STOP
   !
 END PROGRAM pwscf

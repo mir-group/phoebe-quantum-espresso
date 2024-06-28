@@ -1,5 +1,5 @@
 !
-! Copyright (C) 2001-2020 Quantum ESPRESSO group
+! Copyright (C) 2001-2023 Quantum ESPRESSO group
 ! This file is distributed under the terms of the
 ! GNU General Public License. See the file `License'
 ! in the root directory of the present distribution,
@@ -45,7 +45,7 @@ SUBROUTINE lr_orthoUwfc (lflag)
   USE qpoint,           ONLY : nksq, ikks, ikqs
   USE control_lr,       ONLY : lgamma
   USE units_lr,         ONLY : iuatwfc, iuatswfc
-  USE ldaU,             ONLY : U_projection, wfcU, nwfcU, copy_U_wfc
+  USE ldaU,             ONLY : Hubbard_projectors, wfcU, nwfcU, copy_U_wfc
   ! 
   IMPLICIT NONE
   !
@@ -62,30 +62,31 @@ SUBROUTINE lr_orthoUwfc (lflag)
   !
   CALL start_clock ('lr_orthoUwfc')
   !
-  IF (U_projection=="atomic") THEN
+  IF (Hubbard_projectors=="atomic") THEN
      orthogonalize_wfc = .FALSE.
      normalize_only = .FALSE.
      WRITE( stdout, '(/5x,"Atomic wfc used for the projector on the Hubbard manifold are NOT orthogonalized")')
-  ELSEIF (U_projection=="ortho-atomic") THEN
+  ELSEIF (Hubbard_projectors=="ortho-atomic") THEN
      orthogonalize_wfc = .TRUE.
      normalize_only = .FALSE.
      WRITE( stdout, '(/5x,"Atomic wfc used for the projector on the Hubbard manifold are orthogonalized")')
      IF (gamma_only) CALL errore('lr_orthoUwfc', &
           'Gamma-only calculation for this case not implemented', 1 )
-  ELSEIF (U_projection=="norm-atomic") THEN
+  ELSEIF (Hubbard_projectors=="norm-atomic") THEN
      orthogonalize_wfc = .TRUE.
      normalize_only = .TRUE.
      WRITE( stdout, '(/5x,"Atomic wfc used for the projector on the Hubbard manifold are normalized but NOT orthogonalized")')
      IF (gamma_only) CALL errore('lr_orthoUwfc', &
           'Gamma-only calculation for this case not implemented', 1 )
   ELSE
-     WRITE(stdout,*) "U_projection_type =", U_projection
-     CALL errore ("hp_sphi"," This U_projection_type is not valid",1)
+     WRITE(stdout,*) "Hubbard_projectors =", Hubbard_projectors
+     CALL errore ("hp_sphi"," This Hubbard projectors type is not valid",1)
   ENDIF
   !
   ALLOCATE (wfcatom(npwx*npol,natomwfc))
   ALLOCATE (swfcatom(npwx*npol,natomwfc))
   !
+
   IF (okvan) CALL allocate_bec_type (nkb,natomwfc,becp)
   !
   DO ik = 1, nksq
@@ -112,8 +113,11 @@ SUBROUTINE lr_orthoUwfc (lflag)
      !
      ! Orthonormalize or normalize the atomic orbitals (if needed) 
      !
-     IF (orthogonalize_wfc) &
+     IF (orthogonalize_wfc) THEN
+        !$acc data copy(wfcatom, swfcatom)
         CALL ortho_swfc (npw, normalize_only, natomwfc, wfcatom, swfcatom, lflag)
+        !$acc end data
+     END IF
      !
      ! If lflag=.TRUE. copy the result from (orthonormalized) wfcatom 
      ! (which uses the offset oatwfc) to wfcU (which uses the offset offsetU),
@@ -154,8 +158,11 @@ SUBROUTINE lr_orthoUwfc (lflag)
         !
         ! Orthonormalize or normalize the atomic orbitals (if needed)
         !
-        IF (orthogonalize_wfc) &
+        IF (orthogonalize_wfc) THEN 
+           !$acc data copy(wfcatom, swfcatom)
            CALL ortho_swfc (npwq, normalize_only, natomwfc, wfcatom, swfcatom, lflag)
+           !$acc end data
+        END IF
         !
         ! If lflag=.TRUE. copy the result from (orthonormalized) wfcatom 
         ! (which uses the offset oatwfc) to wfcU (which uses the offset offsetU),
@@ -197,14 +204,14 @@ SUBROUTINE s_phi (npw_, ik_, wfc, swfc)
   ! USPP: swfc = S * wfc
   !
   USE kinds,          ONLY : DP
-  USE becmod,         ONLY : calbec
+  USE becmod,         ONLY : calbec, becp
   USE uspp_init,        ONLY : init_us_2
   !
   IMPLICIT NONE
   INTEGER,     INTENT(IN)  :: npw_
   INTEGER,     INTENT(IN)  :: ik_
-  COMPLEX(DP), INTENT(IN)  :: wfc  (npwx, natomwfc)
-  COMPLEX(DP), INTENT(OUT) :: swfc (npwx, natomwfc)
+  COMPLEX(DP), INTENT(IN)  :: wfc  (npwx*npol, natomwfc)
+  COMPLEX(DP), INTENT(OUT) :: swfc (npwx*npol, natomwfc)
   !
   ! NCPP case
   !
@@ -217,7 +224,8 @@ SUBROUTINE s_phi (npw_, ik_, wfc, swfc)
   !
   ! Compute beta functions vkb at ik_
   !
-  CALL init_us_2 (npw_, igk_k(1,ik_), xk(1,ik_), vkb)
+  CALL init_us_2 (npw_, igk_k(1,ik_), xk(1,ik_), vkb, .true.)
+  !$acc update host(vkb)
   !
   ! Compute the product of beta functions vkb
   ! with the functions wfc : becp = <vkb|wfc>
